@@ -6,10 +6,13 @@
 
 Every document excluded from the results carries a proof that it could not be in the top-K — by the **Cauchy-Schwarz inequality**. Zero bound violations by construction.
 
-[![PyPI](https://img.shields.io/badge/pip%20install-winnex--madhava-467C45)](https://pypi.org/project/winnex-madhava)
-[![Python](https://img.shields.io/badge/Python-3.8%2B-467C45)](https://www.python.org/)
-[![C++](https://img.shields.io/badge/C%2B%2B-20-467C45)](https://isocpp.org/)
+[![PyPI version](https://img.shields.io/pypi/v/winnex-madhava?color=467C45)](https://pypi.org/project/winnex-madhava/)
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/winnex-madhava?color=467C45)](https://pypi.org/project/winnex-madhava/)
+[![PyPI - Python Versions](https://img.shields.io/pypi/pyversions/winnex-madhava?color=467C45)](https://pypi.org/project/winnex-madhava/)
+[![CI](https://img.shields.io/github/actions/workflow/status/winnex-ai/winnex-madhava/ci.yml?branch=main&label=CI&color=467C45)](https://github.com/winnex-ai/winnex-madhava/actions/workflows/ci.yml)
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-467C45)](LICENSE)
+[![Issues](https://img.shields.io/github/issues/winnex-ai/winnex-madhava?color=467C45)](https://github.com/winnex-ai/winnex-madhava/issues)
+[![C++](https://img.shields.io/badge/C%2B%2B-20-467C45)](https://isocpp.org/)
 [![Benchmark](https://img.shields.io/badge/BIGANN--100M-L2%20verified-467C45)](docs/VERIFIED.md)
 
 </div>
@@ -28,6 +31,7 @@ Verified on the **official BIGANN-100M L2 ground truth** — see [Benchmarks](#b
 
 - [Installation](#installation)
 - [Quick start](#quick-start)
+- [Examples](#examples)
 - [Why?](#why)
 - [API](#api)
 - [The mathematics](#the-mathematics)
@@ -84,6 +88,26 @@ print(result.bound_violations)         # always 0 — the guarantee
 ```
 
 That's it. Same query + same data → same result, every time. Deterministic.
+
+## Examples
+
+Ready-to-run scripts live in [`examples/`](examples/):
+
+| Script | What it shows |
+|---|---|
+| [`examples/quickstart.py`](examples/quickstart.py) | Build + search + the bound guarantee (copy-paste) |
+| [`examples/rag_demo.py`](examples/rag_demo.py) | End-to-end RAG: encode texts → index → retrieve → rerank |
+| [`examples/batch_benchmark.py`](examples/batch_benchmark.py) | Recall vs brute-force `search_exact`, with the recall ceiling |
+| [`examples/python_usage.py`](examples/python_usage.py) | All public API functions with docstring signatures |
+| [`examples/example_minimal.cpp`](examples/example_minimal.cpp) | C++ minimal usage |
+| [`examples/bench_bigann_l2.cpp`](examples/bench_bigann_l2.cpp) | C++ BIGANN-100M L2 benchmark |
+
+Run any of them with:
+
+```bash
+pip install winnex-madhava
+python examples/quickstart.py
+```
 
 ## Why?
 

@@ -1,0 +1,49 @@
+name: CI
+
+# Continuous integration: build the wheel and run the test suite.
+# This is the "trust" badge shown in the README — it proves the package
+# compiles and its tests pass on every push/PR.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build sdist and wheel (manylinux container)
+        run: |
+          PY=/opt/python/cp312-cp312/bin/python
+          $PY -m pip install --quiet build
+          $PY -m build
+
+      - name: Repair wheel to manylinux
+        run: |
+          /opt/python/cp312-cp312/bin/pip install --quiet auditwheel
+          /opt/python/cp312-cp312/bin/python -m auditwheel repair dist/*.whl -w dist/
+          rm -f dist/*linux_x86_64*.whl
+
+      - name: Install wheel + test deps
+        run: |
+          /opt/python/cp312-cp312/bin/pip install --quiet dist/*.whl pytest numpy
+
+      - name: Run Python tests
+        run: |
+          /opt/python/cp312-cp312/bin/python -m pytest tests/python/ -v
+
+      - name: Compile C++ unit tests
+        run: |
+          /opt/python/cp312-cp312/bin/pip install --quiet cmake ninja
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DMADHAVA_BUILD_PYTHON=OFF \
+            -DMADHAVA_BUILD_BENCHMARK=OFF -DMADHAVA_BUILD_EXAMPLES=OFF
+          cmake --build build -j2
+          ctest --test-dir build --output-on-failure
