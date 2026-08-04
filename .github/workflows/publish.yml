@@ -1,0 +1,78 @@
+name: publish
+
+# Publish winnex-madhava to PyPI using a Trusted Publisher (OpenID Connect).
+# This is the credential-free mechanism recommended by PyPI — no API token
+# needed. The PyPI-side configuration must match EXACTLY:
+#
+#   PyPI Project Name : winnex-madhava
+#   Owner             : winnex-ai
+#   Repository name   : winnex-madhava
+#   Workflow name     : publish.yml
+#   Environment name  : publish
+#
+# The wheel is built inside the official PyPA manylinux Docker image so it
+# carries a broad manylinux platform tag (not a host-specific linux_x86_64).
+# Building on the host (ubuntu-latest) produces a glibc too new for
+# auditwheel to repair — hence the container build.
+
+on:
+  push:
+    tags:
+      - "v*"          # v1.0.0, v1.0.1, ... trigger a release
+  workflow_dispatch:  # allow manual trigger from the Actions tab
+
+permissions:
+  contents: read
+  id-token: write    # required for the trusted-publisher OIDC exchange
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_28_x86_64   # manylinux toolchain
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build sdist and wheel (manylinux container)
+        run: |
+          # /opt/python/cp312-cp312 is the CPython 3.12 build in the image.
+          PY=/opt/python/cp312-cp312/bin/python
+          $PY -m pip install --quiet build
+          $PY -m build
+
+      - name: Repair wheel to manylinux (auditwheel)
+        run: |
+          /opt/python/cp312-cp312/bin/pip install --quiet auditwheel
+          # In the manylinux container the toolchain is old enough for
+          # auditwheel to tag the wheel as manylinux_2_28 (or lower).
+          /opt/python/cp312-cp312/bin/python -m auditwheel repair \
+            dist/*.whl -w dist/
+          # Remove the un-repaired wheel so only manylinux is uploaded.
+          rm -f dist/*linux_x86_64*.whl
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # Must match the Environment name registered on the PyPI trusted
+    # publisher (currently: "publish"). Create this environment under
+    # GitHub → Settings → Environments → New environment.
+    environment: publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

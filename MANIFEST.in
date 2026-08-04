@@ -1,0 +1,9 @@
+include LICENSE
+include README.md
+include pyproject.toml
+recursive-include include *.hpp
+recursive-include src *.cpp
+recursive-include bindings *.cpp
+recursive-include python *.py
+recursive-include tests *.cpp *.py
+recursive-include examples *.cpp *.py

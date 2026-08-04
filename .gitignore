@@ -1,0 +1,10 @@
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.so
+*.a
+*.o
+__pycache__/
+.pytest_cache/
+*.pyc

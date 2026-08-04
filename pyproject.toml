@@ -1,0 +1,55 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.12", "cmake>=3.20", "auditwheel>=5.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "winnex-madhava"
+version = "1.0.0"
+description = "Deterministic vector search with Cauchy-Schwarz bound pruning + exact-L2 post-filter (BIGANN L2 verified)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Winnex Brasil Soluções Empresariais LTDA-ME", email = "pay@winnex.ai" },
+]
+keywords = ["vector-search", "cauchy-schwarz", "deterministic", "l2", "bigann", "rag", "nn-search", "bound"]
+classifiers = [
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "numpy>=1.20",
+]
+
+[project.urls]
+Homepage = "https://winnex.ai"
+Source = "https://github.com/winnex-ai"
+
+[tool.scikit-build]
+minimum-version = "0.10"
+build-dir = "build/{wheel_tag}"
+cmake.version = ">=3.20"
+wheel.packages = ["python/winnex_madhava"]
+sdist.include = [
+    "include/**",
+    "src/**",
+    "bindings/**",
+    "CMakeLists.txt",
+    "pyproject.toml",
+    "README.md",
+    "LICENSE",
+]
+
+[tool.scikit-build.cmake.define]
+MADHAVA_BUILD_TESTS = "OFF"
+MADHAVA_BUILD_BENCHMARK = "OFF"
+MADHAVA_BUILD_EXAMPLES = "OFF"
+MADHAVA_BUILD_PYTHON = "ON"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+
+[tool.setuptools]
+package-dir = { "" = "python" }
