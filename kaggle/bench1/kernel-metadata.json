@@ -1,0 +1,15 @@
+{
+  "id": "kleniopadilha/winnex-madhava-bigann-l2-benchmark",
+  "title": "winnex-madhava BIGANN L2 Benchmark",
+  "code_file": "winnex_madhava_benchmark.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": false,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "dataset_sources": [
+    "shurangwu/bigann-100m"
+  ],
+  "competition_sources": [],
+  "kernel_sources": []
+}

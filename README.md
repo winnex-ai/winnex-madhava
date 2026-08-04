@@ -36,6 +36,7 @@ Verified on the **official BIGANN-100M L2 ground truth** — see [Benchmarks](#b
 - [API](#api)
 - [The mathematics](#the-mathematics)
 - [Benchmarks](#benchmarks)
+- [Kaggle benchmark (reproducible)](#kaggle-benchmark-reproducible)
 - [Limitations (read this first)](#limitations-read-this-first)
 - [Honest comparison](#honest-comparison)
 - [Build from source](#build-from-source)
@@ -209,6 +210,24 @@ CPU-only machine (28 threads, AVX2+FMA).
 The **ceiling** column is `search_exact` — a perfect exhaustive scan over the
 same subset. winnex-madhava reaches **100% of that ceiling at 10M** and 94% at
 100M, with **0 bound violations** at every scale.
+
+### Kaggle benchmark (reproducible)
+
+A live, reproducible benchmark runs on Kaggle against the **official
+BIGANN-100M L2 dataset** — installs `winnex-madhava` from PyPI, indexes a 10M
+subset, and reports the bound search vs the exact-scan ceiling:
+
+[![Kaggle](https://img.shields.io/badge/Kaggle-BIGANN%20L2%20benchmark-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-bigann-l2-benchmark)
+
+> **Methodological note (important).** The official BIGANN L2 ground truth was
+> computed over the *full* 100M corpus. When we restrict the base to a 10M
+> subset, many of the true nearest neighbors live outside the subset, so even a
+> **perfect exhaustive scan** scores R@10 ≈ 0.43 against the official GT. This
+> is an artifact of the subset, not of the method — it is why the "100%
+> efficiency" is relative to the *subset* scan ceiling, not to an absolute
+> recall of 1.0. A second, stricter benchmark that recomputes ground truth
+> within the indexed subset and compares against a strong approximate index
+> (FAISS HNSW) is in the works.
 
 ### Why is the ceiling not 1.0?
 
