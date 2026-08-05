@@ -10,6 +10,16 @@ option(MADHAVA_BUILD_TESTS "Build tests" ON)
 option(MADHAVA_BUILD_PYTHON "Build Python bindings" ON)
 option(MADHAVA_BUILD_BENCHMARK "Build benchmark executable" ON)
 option(MADHAVA_BUILD_EXAMPLES "Build examples" ON)
+# SIMD/optimization. AVX2+FMA are required for the fast paths (dot_f32,
+# load_raw_norm). We enable them explicitly (not -march=native) so the
+# manylinux wheel stays portable across x86-64 while still being fast.
+# Machines without AVX2 fall back to the scalar path at runtime.
+option(MADHAVA_ENABLE_SIMD "Enable AVX2/FMA + -O3" ON)
+
+if(MADHAVA_ENABLE_SIMD AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -mavx2 -mfma -funroll-loops")
+    add_compile_definitions(MADHAVA_FORCE_SIMD)
+endif()
 
 # Dependencies
 find_package(OpenMP REQUIRED)
