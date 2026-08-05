@@ -4,20 +4,28 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "winnex-madhava"
-version = "1.1.3"
-description = "Deterministic vector search with Cauchy-Schwarz bound pruning + exact-L2 post-filter (BIGANN L2 verified)"
+version = "1.1.4"
+description = "Deterministic vector search with Cauchy-Schwarz bound pruning + exact-L2 post-filter (BIGANN L2 verified) — provable completeness for RAG indexing and regulated retrieval."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { file = "LICENSE" }
 authors = [
     { name = "Winnex Brasil Soluções Empresariais LTDA-ME", email = "pay@winnex.ai" },
 ]
-keywords = ["vector-search", "cauchy-schwarz", "deterministic", "l2", "bigann", "rag", "nn-search", "bound"]
+keywords = [
+    "vector-search", "cauchy-schwarz", "deterministic", "l2", "bigann",
+    "rag", "rag-indexing", "embedding", "approximate-nearest-neighbor",
+    "ann", "hnsw", "ivf", "nn-search", "bound", "semantic-search",
+    "similarity-search", "retrieval", "exact-search", "nearest-neighbors",
+]
 classifiers = [
     "Programming Language :: C++",
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries",
+    "Topic :: Text Processing :: Indexing",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
 ]
 dependencies = [
     "numpy>=1.20",
@@ -26,6 +34,8 @@ dependencies = [
 [project.urls]
 Homepage = "https://winnex.ai"
 Source = "https://github.com/winnex-ai"
+Kaggle = "https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-200-queries"
+Benchmark = "https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-200-queries"
 
 [tool.scikit-build]
 minimum-version = "0.10"
