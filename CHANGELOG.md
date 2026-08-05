@@ -5,6 +5,35 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] — 2026-08-05
+
+### 🔧 Corrige a definição de recall@K (padrão BIGANN)
+
+O recall era calculado contra **todos** os ids do GT presentes no subset (até
+100), inflando R@10 de 0.404 para 0.43 (10M) e de 0.354 para 0.788 (100M). O
+padrão BIGANN usa apenas os **top-K ids oficiais** do GT.
+
+**Valores corrigidos (verificados no Kaggle com o wheel v1.1.2):**
+
+| Escala | R@10 | NDCG | Eficiência | Vio | Build |
+|---|---|---|---|---|---|
+| 10M | **0.4040** | 0.4755 | 100% | 0 | 24.5s |
+| 100M | **0.3540** | 0.4344 | 100% | 0 | 219.9s |
+
+O Madhava atinge **exatamente o teto do scan exato** em todas as escalas, com
+0 violações de bound e garantia matemática por documento.
+
+### Benchmark Kaggle (pip install)
+
+Novo notebook público: [winnex-madhava-pip-112](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-112).
+
+## [1.1.1] — 2026-08-05
+
+### 🚀 Build ultra-rápido (AVX2/FMA)
+
+O wheel era compilado sem `-mavx2 -mfma`, fazendo o C++ cair no path scalar —
+build 10M em ~52s. Com as flags SIMD: **build 10M = 1.0s** (medido no PyPI).
+
 ## [1.1.0] — 2026-08-04
 
 ### 🎯 Alinhamento com a stack Winnex AI

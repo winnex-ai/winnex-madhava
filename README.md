@@ -230,7 +230,7 @@ Rode você mesmo o benchmark com um clique no Kaggle: o notebook instala
 `winnex-madhava` do PyPI, indexa 10M/100M do BIGANN e reporta o teto do scan
 exato vs o Madhava, com a tabela de eficiência:
 
-[![Kaggle](https://img.shields.io/badge/Kaggle-winnex--madhava%20100M-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-benchmark-100m)
+[![Kaggle](https://img.shields.io/badge/Kaggle-winnex--madhava%201.1.2%20100M-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-112)
 
 ### O mistério do subset 10M resolvido — a Cobertura do GT
 
