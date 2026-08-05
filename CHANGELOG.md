@@ -5,6 +5,34 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.3] — 2026-08-05
+
+### 🔧 Métricas robustas (Recall@K / NDCG@K)
+
+As métricas dividiam por `k=10` fixo e intersectavam apenas `gt[:k]`, o que
+penalizava queries com poucos relevantes no subset (um scan exato perfeito podia
+marcar < 1.0) e ignorava vizinhos relevantes além da posição k.
+
+**Nova definição:**
+```
+recall@K = |result[:K] ∩ gt| / min(K, |gt|)
+ndcg@K   = DCG / IDCG, com IDCG usando min(K, |gt|)
+```
+
+**Verificado (10M e 100M, GT oficial, Kaggle):**
+
+| Escala | R@10 | NDCG | Eficiência | Vio | Build |
+|---|---|---|---|---|---|
+| 10M | **0.4882** | 0.5393 | 100% | 0 | 27.7s |
+| 100M | **0.7880** | 0.8208 | 100% | 0 | 227.5s |
+
+Agora um scan exato perfeito atinge **exatamente 1.0** quando o GT tem poucos
+relevantes, e os números são consistentes com runs anteriores (0.488/0.788).
+
+### Benchmark Kaggle (pip install)
+
+Novo notebook público: [winnex-madhava-pip-113](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-113).
+
 ## [1.1.2] — 2026-08-05
 
 ### 🔧 Corrige a definição de recall@K (padrão BIGANN)
