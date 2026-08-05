@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "winnex-madhava"
-version = "1.2.0"
+version = "1.2.1"
 description = "Deterministic vector search with Cauchy-Schwarz bound pruning + exact-L2 post-filter (BIGANN L2 verified) — provable completeness for RAG indexing and regulated retrieval."
 readme = "README.md"
 requires-python = ">=3.8"

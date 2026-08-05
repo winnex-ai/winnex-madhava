@@ -496,24 +496,83 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     out.modulation_gain = mod_gain;
 
     // Final: post-filter with exact metric on the survivors, else top-K by score.
-    // The k2 cap (k2_max) limits the stage-3 cost — this is the bigann_stream
-    // V3 approach: k2 = min(k2_fraction*N, k2_max), then exact-score all of them.
+    // Early-exit (bigann_stream V17 optimization): score survivors in bound order
+    // and stop once the *bound* of the next candidate cannot beat the current
+    // K-th best exact score. This drives k3 well below k2_max.
+    //
+    // ranked[i].first holds the bound score:
+    //   L2:    lower bound of L2²  (ascending = better; exact L2² >= lb)
+    //   cosine: -UB(similarity)     (ascending = better; exact cos <= UB)
+    // So:
+    //   L2:    stop when lb_next >= worst_exact_L2 (exact L2² >= lb >= worst → can't be top-K)
+    //   cosine: stop when -UB_next <= worst_exact (ub_next >= -worst? no: -UB_next <= worst
+    //           means UB_next >= -worst, and exact cos <= UB_next — not a valid stop!)
+    // CORRECT cosine stop: UB_next <= worst_exact, i.e. -ranked[i+1].first <= worst_exact.
     if (cfg_.postfilter) {
+        // Sort ALL survivors by bound score ascending (best-first). The early-exit
+        // walks the list in bound order, so the whole list must be sorted — a
+        // partial_sort would leave the tail unordered and break the pruning bound.
+        std::sort(ranked.begin(), ranked.end());
         std::vector<std::pair<float, int>> exact(k2);
-        int n_exact = k2;
+        int n_exact = 0;
+        std::vector<std::pair<float, int>> heap; // holds exact scores; "worst" is heap[0]
+        auto worse_than = [&](float a, float b) { return is_l2 ? a > b : a < b; };
+        auto push_candidate = [&](int vi, float score) {
+            if ((int)heap.size() < K) {
+                heap.push_back({score, vi});
+                if ((int)heap.size() == K)
+                    std::make_heap(heap.begin(), heap.end(),
+                                   [&](auto& a, auto& b) { return worse_than(a.first, b.first); });
+            } else if (worse_than(heap[0].first, score)) {
+                std::pop_heap(heap.begin(), heap.end(),
+                              [&](auto& a, auto& b) { return worse_than(a.first, b.first); });
+                heap.back() = {score, vi};
+                std::push_heap(heap.begin(), heap.end(),
+                               [&](auto& a, auto& b) { return worse_than(a.first, b.first); });
+            }
+        };
+        if (cfg_.early_exit) {
+            int i = 0;
+            for (; i < k2; i++) {
+                int vi = ranked[i].second;
+                float score = exact_score(vi, query);
+                exact[i] = {score, vi};
+                n_exact++;
+                push_candidate(vi, score);
+                if ((int)heap.size() == K && i + 1 < k2) {
+                    float worst = heap[0].first;              // current K-th best exact score
+                    float next_bound = ranked[i + 1].first;   // bound score of next survivor
+                    bool cannot_beat = is_l2 ? next_bound >= worst
+                                             : -next_bound <= worst;
+                    if (cannot_beat)
+                        break;
+                }
+            }
+        } else {
 #pragma omp parallel for
-        for (int i = 0; i < k2; i++) {
-            int vi = ranked[i].second;
-            exact[i] = {exact_score(vi, query), vi};
+            for (int i = 0; i < k2; i++) {
+                int vi = ranked[i].second;
+                exact[i] = {exact_score(vi, query), vi};
+            }
+            n_exact = k2;
         }
         out.k3 = n_exact;
-        // Sort: L2 ascending, cosine descending.
-        if (is_l2)
-            std::partial_sort(exact.begin(), exact.begin() + std::min(K, k2), exact.end());
-        else
-            std::partial_sort(exact.begin(), exact.begin() + std::min(K, k2), exact.end(),
-                              [](auto& a, auto& b) { return a.first > b.first; });
-        for (int i = 0; i < std::min(K, k2); i++) out.indices.push_back(exact[i].second);
+        if ((int)heap.size() == K) {
+            // Final order: L2 wants ascending L2², cosine wants descending similarity.
+            // worse_than is the heap comparator (worst at top); the sorted output
+            // must be the OPPOSITE (best first).
+            std::sort(heap.begin(), heap.end(),
+                      [&](auto& a, auto& b) { return !worse_than(a.first, b.first); });
+            for (int i = 0; i < K; i++) out.indices.push_back(heap[i].second);
+        } else {
+            // Fallback (early_exit off or partial): sort exact.
+            if (is_l2)
+                std::partial_sort(exact.begin(), exact.begin() + std::min(K, n_exact), exact.end());
+            else
+                std::partial_sort(exact.begin(), exact.begin() + std::min(K, n_exact), exact.end(),
+                                  [](auto& a, auto& b) { return a.first > b.first; });
+            for (int i = 0; i < std::min(K, n_exact); i++) out.indices.push_back(exact[i].second);
+        }
     } else {
         std::partial_sort(ranked.begin(), ranked.begin() + std::min(K, k2), ranked.end());
         for (int i = 0; i < std::min(K, k2); i++) out.indices.push_back(ranked[i].second);

@@ -76,7 +76,7 @@ struct Config {
     bool modulation = true;   // error-backprop ranking: prune by B2, rank by B1+α(B2−B1)
     bool postfilter = true;   // exact metric re-score on the surviving set
     bool normalize_input = true; // for Metric::Cosine: L2-normalize each vector on load
-    bool early_exit = true;   // stop exact scoring when the bound can't beat the current top-K
+    bool early_exit = false;   // stop exact scoring when the bound can't beat the current top-K
 
     // Parallelism
     int n_threads = 0;        // 0 = use omp_get_max_threads()

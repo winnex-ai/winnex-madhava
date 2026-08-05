@@ -80,7 +80,7 @@ recall_at_k = _native.recall_at_k
 ndcg_at_k = _native.ndcg_at_k
 read_bigann_groundtruth = _native.read_bigann_groundtruth
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 __all__ = [
     "Config",
     "SearchResult",
@@ -111,7 +111,7 @@ def build_engine(
     modulation: bool = True,
     postfilter: bool = True,
     normalize_input: bool = True,
-    early_exit: bool = True,
+    early_exit: bool | None = None,  # None = auto (True for cosine, False for l2)
     seed: int = 42,
 ) -> MadhavaL2:
     """Build a Winnex Madhava engine over a uint8 corpus.
@@ -148,9 +148,11 @@ def build_engine(
         Exact-metric re-score on the surviving candidates.
     normalize_input : bool, default True
         L2-normalize each vector at build (used when metric='cosine').
-    early_exit : bool, default True
+    early_exit : bool or None, default None (auto)
         Stop exact scoring once the bound cannot beat the current top-K
-        (the bigann_stream optimization; important at 100M).
+        (the bigann_stream V17 optimization; drives k3 down to ~100 at scale).
+        ``None`` auto-selects: True for ``metric='cosine'`` (where the
+        modulated score is a valid similarity upper bound), False for 'l2'.
     seed : int, default 42
         PRNG seed for the MGS projections.
     """
@@ -161,7 +163,8 @@ def build_engine(
         dim = arr.shape[1]
     cfg = Config()
     cfg.dim = int(dim)
-    cfg.metric = Metric.COSINE if metric.lower() == "cosine" else Metric.L2
+    is_cosine = metric.lower() == "cosine"
+    cfg.metric = Metric.COSINE if is_cosine else Metric.L2
     cfg.quant = QuantMode.INT8 if quant.lower() == "int8" else QuantMode.NONE
     cfg.stage1_dim = int(stage1_dim)
     cfg.stage2_dim = int(stage2_dim)
@@ -171,7 +174,10 @@ def build_engine(
     cfg.modulation = bool(modulation)
     cfg.postfilter = bool(postfilter)
     cfg.normalize_input = bool(normalize_input)
-    cfg.early_exit = bool(early_exit)
+    # early_exit default: True for cosine (the V17 mode, where the modulated
+    # score is a valid similarity upper bound and k3 drops to ~100); False for
+    # L2 (where the bound is less tight and pruning loses more recall).
+    cfg.early_exit = bool(early_exit) if early_exit is not None else is_cosine
     cfg.k2_max = int(k2_max)
     cfg.seed = int(seed)
     engine = MadhavaL2(cfg)
