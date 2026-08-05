@@ -204,15 +204,15 @@ CPU-only machine (28 threads, AVX2+FMA).
 
 ### "Prova dos 9" no 100M — topo da categoria para buscas exatas via bounding
 
-O Madhava atinge **R@10 = 0.7880** com **NDCG = 0.8208** no dataset oficial
-(100M), **varrendo o teto do scan exato** — alcança exatamente o que um scan
-exaustivo perfeito alcançaria, com **0 violações de bound** e garantia
-matemática por documento.
+O Madhava atinge **R@10 = 0.8360** com **NDCG = 0.8611** no dataset oficial
+(100M, 200 queries — estatisticamente robusto), **varrendo o teto do scan
+exato** — alcança exatamente o que um scan exaustivo perfeito alcançaria, com
+**0 violações de bound** e garantia matemática por documento.
 
 | Scale | Exact-scan ceiling<br>(R@10) | winnex-madhava<br>(R@10) | NDCG | Efficiency |
 |---|---|---|---|---|
-| 10M | 0.4882 | **0.4882** | 0.5393 | **100%** |
-| 100M | 0.7880 | **0.7880** | 0.8208 | **100%** |
+| 10M | 0.5225 | **0.5225** | 0.5796 | **100%** |
+| 100M | 0.8360 | **0.8360** | 0.8611 | **100%** |
 
 O **ceiling** é `search_exact` — um scan exaustivo perfeito sobre o mesmo
 subset. O winnex-madhava atinge **100% do ceiling em 10M e 100M**, com **0
@@ -255,17 +255,17 @@ um scan exato perfeito fica em **R@10 ≈ 0.49** (o teto matemático do subset,
 com a definição robusta de recall). **Nenhum índice** — exato ou aproximado —
 pode superar isso no subset. É por isso que a "eficiência de 100%" é relativa
 ao *ceiling do subset*, não a um recall absoluto de 1.0. Em 100M (cobertura
-100%), o Madhava atinge **0.7880** — o recall real do dataset.
+100%), o Madhava atinge **0.8360** — o recall real do dataset.
 
 ### Build vs Latency — o trade-off honesto
 
 | Método (subset 10M) | R@10 | Build (s) | Latência (ms) |
 |---|---|---|---|
-| **winnex-madhava** | **0.4882** | **27.7** (Kaggle) / **1.1** (local) | 533 |
+| **winnex-madhava** | **0.5225** | **23.7** (Kaggle) / **1.0** (local) | 515 |
 | IVF nprobe=128 | 0.4060 | 170 | 9.3 |
 | IVF-PQ m=64 | 0.3920 | 90 | 24.1 |
 | HNSW ef=256 | 0.2940 | 1025 | 1.0 |
-| FlatL2 (exato) | 0.4882 | — | 617 |
+| FlatL2 (exato) | 0.5225 | — | 617 |
 
 O Madhava usa um **bound matemático** para podar, varrendo todos os vetores
 sem construir grafo/índice. Isso custa latência por query (centenas de ms), mas
