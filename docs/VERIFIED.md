@@ -10,28 +10,26 @@ ships), not by extrapolation.
 
 ## 1. BIGANN-100M L2 subset (official ground truth)
 
-Verified 2026-08-04 on the local BIGANN-100M subset (10M vectors, 128D uint8),
-CPU-only (28 threads, AVX2+FMA).
+Verified 2026-08-04 on the official BIGANN-100M L2 ground truth, 200 queries,
+CPU-only (28 threads, AVX2+FMA), robust recall definition
+(`|result[:K] ∩ GT| / min(K, |GT|)`).
 
-| Method | Build (s) | Latency (ms) | R@10 | NDCG | Bound vio. | k1 |
-|--------|-----------|--------------|------|------|------------|----|
-| `exact_scan` (ceiling) | 2.806 | 77.2 | **0.4300** | 0.4989 | 0 | 10M |
-| `winnex-madhava` (bound+filter) | 2.806 | 106.4 | **0.4300** | 0.4989 | 0 | 500K |
+| Scale | `exact_scan` ceiling (R@10) | `winnex-madhava` (R@10) | NDCG | Bound vio. | Efficiency |
+|-------|------------------------------|--------------------------|------|------------|------------|
+| 10M | 0.5225 | **0.5225** | 0.5796 | 0 | **100%** |
+| 100M | 0.8360 | **0.8360** | 0.8611 | 0 | **100%** |
 
 **Efficiency vs ceiling: 100.0%** — the bound+post-filter recovers exactly the
 recall of a perfect exhaustive scan over the same subset, with 0 bound
-violations.
+violations. Runs: [winnex-madhava-pip-200-queries](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-200-queries).
 
 ### Why is the ceiling not 1.0?
 
 The official BIGANN L2 ground truth was generated in the **full 1B space**. On
-a 100M subset, the exact top-K by L2² differs from the 1B ground truth, so even
-a perfect exhaustive scan caps at R@10 ≈ 0.79. **No index — exact or
-approximate — can score higher on this subset against this ground truth.**
-winnex-madhava reaches 100% of that ceiling at 10M and 94% at 100M.
-
-Reference ceiling at 100M (measured earlier): R@10=0.788, NDCG=0.821.
-Reference `winnex-madhava` at 100M (pre-postfilter): R@10=0.745 (94.5% of ceiling).
+a subset, the exact top-K by L2² differs from the 1B ground truth, so even a
+perfect exhaustive scan caps at R@10 ≈ 0.52 (10M) and 0.84 (100M). **No index —
+exact or approximate — can score higher on this subset against this ground
+truth.** winnex-madhava reaches **100% of that ceiling** at both scales.
 
 ---
 
@@ -60,11 +58,15 @@ cmake --build build -j
 
 The test suite runs on every push via GitHub Actions (`ci.yml`):
 
-**Python (`tests/python/test_python_api.py`)** — 5 tests:
+**Python (`tests/python/test_python_api.py`)** — 9 tests:
 - build + search returns the configured `k` results
-- query equal to a corpus vector is its own top-1
+- query equal to a corpus vector is its own top-1 (L2)
 - `search_exact` matches a brute-force L2 scan
+- cosine + cascade `[stage1, stage2]` + modulation: query is its own top-1
+- `quant='none'` (float32) matches exact scan
 - `recall_at_k` / `ndcg_at_k` metric helpers return 1.0 on a perfect list
+- robust recall: |gt| < K → a perfect result still scores 1.0
+- robust recall: intersects with the entire relevant set, not just top-K GT
 - `benchmark_vs_groundtruth` integrates the GT mapping
 
 **C++ (`tests/test_winnex_madhava.cpp`)**:

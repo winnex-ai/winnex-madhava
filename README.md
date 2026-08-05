@@ -11,7 +11,6 @@ Every document excluded from the results carries a proof that it could not be in
 [![PyPI - Python Versions](https://img.shields.io/pypi/pyversions/winnex-madhava?color=467C45)](https://pypi.org/project/winnex-madhava/)
 [![CI](https://img.shields.io/github/actions/workflow/status/winnex-ai/winnex-madhava/ci.yml?branch=main&label=CI&color=467C45)](https://github.com/winnex-ai/winnex-madhava/actions/workflows/ci.yml)
 [![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-467C45)](LICENSE)
-[![Issues](https://img.shields.io/github/issues/winnex-ai/winnex-madhava?color=467C45)](https://github.com/winnex-ai/winnex-madhava/issues)
 [![C++](https://img.shields.io/badge/C%2B%2B-20-467C45)](https://isocpp.org/)
 [![Benchmark](https://img.shields.io/badge/BIGANN--100M-L2%20verified-467C45)](docs/VERIFIED.md)
 
@@ -25,14 +24,15 @@ Every document excluded from the results carries a proof that it could not be in
 
 The proof is per-document and mathematical: a Cauchy-Schwarz upper bound on the inner product, which converts into a lower bound on L2². If the bound says a vector cannot be in the top-K, that vector **is not in the top-K**. No heuristics, no random graphs, no "we think it's fine."
 
-Verified on the **official BIGANN-100M L2 ground truth** — see [Benchmarks](#benchmarks).
+Verified against the **official BIGANN-100M L2 ground truth** — see [Benchmarks](#benchmarks).
 
 ## Table of contents
 
 - [Installation](#installation)
 - [Quick start](#quick-start)
-- [Examples](#examples)
-- [Why?](#why)
+- [When should you use this?](#when-should-you-use-this)
+- [When should you NOT use this?](#when-should-you-not-use-this)
+- [Parameter guide](#parameter-guide)
 - [API](#api)
 - [The mathematics](#the-mathematics)
 - [Benchmarks](#benchmarks)
@@ -50,9 +50,9 @@ Verified on the **official BIGANN-100M L2 ground truth** — see [Benchmarks](#b
 pip install winnex-madhava
 ```
 
-Requirements: Python ≥ 3.8, NumPy. The C++ core ships pre-built in the wheel
-(manylinux); a C++20 compiler + CMake ≥ 3.20 are needed only when building
-from source.
+**Requirements:** Python ≥ 3.8 and NumPy. The C++ core ships pre-built in the
+wheel (manylinux x86-64); a C++20 compiler + CMake ≥ 3.20 are needed only when
+building from source.
 
 > **⚠️ Python version support (important).** The pre-built manylinux wheel is
 > currently **CPython 3.12 only**. On 3.8–3.11, pip falls back to the sdist
@@ -61,11 +61,20 @@ from source.
 > C++20 toolchain or use Python 3.12. Wider wheel coverage (cp38–cp311) is on
 > the roadmap.
 >
-> Not published to PyPI yet? Install straight from this repo:
+> Installing straight from this repo works too:
 >
 > ```bash
 > pip install git+https://github.com/winnex-ai/winnex-madhava.git
 > ```
+
+**How to know your install is working.** After installing, run:
+
+```bash
+python -c "import winnex_madhava; print(winnex_madhava.__version__)"
+```
+
+You should see `1.1.3` or newer. If you see `No module named`, you are on the
+unsupported source-build path (see the warning above).
 
 ## Quick start
 
@@ -83,73 +92,115 @@ print(f"indexed {engine.num_vectors()} vectors in {engine.build_seconds():.2f}s"
 query = corpus[0].astype(np.float32)   # (128,) float32
 result = engine.search(query)
 
-print(result.indices)                  # top-K dataset ids, ascending L2²
+print(result.indices)                  # top-K dataset ids
 print(result.latency_ms)               # milliseconds
 print(result.bound_violations)         # always 0 — the guarantee
 ```
 
 That's it. Same query + same data → same result, every time. Deterministic.
 
-## Examples
+## When should you use this?
 
-Ready-to-run scripts live in [`examples/`](examples/):
+`winnex-madhava` is for the cases where **"fast but unprovable" is a liability**.
+The trade-off is simple: you pay **more latency per query** than an approximate
+index, but you get **a mathematical proof per document** and a **much faster
+build**.
 
-| Script | What it shows |
+| Use case | Why winnex-madhava |
 |---|---|
-| [`examples/quickstart.py`](examples/quickstart.py) | Build + search + the bound guarantee (copy-paste) |
-| [`examples/rag_demo.py`](examples/rag_demo.py) | End-to-end RAG: encode texts → index → retrieve → rerank |
-| [`examples/batch_benchmark.py`](examples/batch_benchmark.py) | Recall vs brute-force `search_exact`, with the recall ceiling |
-| [`examples/python_usage.py`](examples/python_usage.py) | All public API functions with docstring signatures |
-| [`examples/example_minimal.cpp`](examples/example_minimal.cpp) | C++ minimal usage |
-| [`examples/bench_bigann_l2.cpp`](examples/bench_bigann_l2.cpp) | C++ BIGANN-100M L2 benchmark |
+| **Regulated retrieval** (legal discovery, medical records, financial compliance, government audits) | Every excluded document carries a proof it could not be in the top-K. Defensible in court. |
+| **Continuous ingestion / dynamic RAG** (corpus changes frequently) | Build is ~10–1000× faster than HNSW — no painful rebuilds. Rebuild the whole index on every ingestion. |
+| **Batch processing** | Scan everything with bounds; throughput over latency. |
+| **RAM/CPU-constrained environments** | Int8-quantized projections use ~4× less memory than float32 (18.6 GB for 100M×128D). |
+| **RAG that must not silently drop a relevant document** | Deterministic recall ceiling reachable; 0 bound violations. |
+| **Auditability / compliance (EU AI Act, LGPD, HIPAA)** | Deterministic (same input → same output), per-document audit trail. |
 
-Run any of them with:
+## When should you NOT use this?
 
-```bash
-pip install winnex-madhava
-python examples/quickstart.py
+Be honest — `winnex-madhava` is **not** the right tool for:
+
+- **Lowest-latency serving (sub-ms QPS).** HNSW/IVF are 100–1000× faster per
+  query. If you need millions of queries/sec, use an approximate index.
+- **Arbitrary float32 corpora.** The input contract is **uint8** (0–255). If
+  you pass raw float embeddings, they get truncated to uint8 and recall
+  collapses. Quantize your floats to uint8 first, or use a different engine.
+- **Tiny / low-dimensional corpora** (d < ~8). The projection overhead
+  dominates; a plain `search_exact` scan is faster and simpler.
+- **GPU inference.** This is CPU-only.
+
+## Parameter guide
+
+`build_engine` is **parametrizable** to reflect the full Winnex stack. All
+parameters have sensible defaults — start with the defaults and tune only what
+you need.
+
+```python
+engine = winnex_madhava.build_engine(
+    corpus,                          # (n, dim) uint8
+    dim=128,                         # vector dimensionality (default: corpus.shape[1])
+    metric="cosine",                 # "cosine" (normalized embeddings) or "l2" (raw uint8)
+    quant="int8",                    # "int8" (fast, memory-light) or "none" (float32 exact)
+    stage1_dim=64,                   # Stage-1 QR projection (wide bound B1)
+    stage2_dim=128,                  # Stage-2 QR projection (tight bound B2); 0 disables cascade
+    k=10,                            # number of results
+    k1_fraction=0.05,                # Stage-1 keep fraction (5% of N)
+    k2_fraction=0.01,                # Stage-2 keep fraction (1% of N)
+    modulation=True,                 # error-backprop ranking (prune by B2, rank by B1+α(B2−B1))
+    postfilter=True,                 # exact metric re-score on survivors
+    normalize_input=True,            # L2-normalize vectors (used when metric="cosine")
+    seed=42,                         # PRNG seed for the MGS projections (deterministic)
+)
 ```
 
-## Why?
+### Choosing `metric`
 
-Modern vector search is a heuristic gamble. HNSW builds a random proximity
-graph and *hopes* it didn't prune a relevant neighbor; IVF picks clusters and
-hopes the right one was probed. When the search is a legal discovery, a
-medical record lookup, or a compliance audit, "hope" is not a defensible
-answer.
-
-**winnex-madhava replaces hope with proof.** Each excluded document carries its
-upper bound; if the bound is below the threshold, exclusion is a theorem, not
-a guess.
-
-| Property | HNSW / IVF / PQ | **winnex-madhava** |
+| `metric` | Input contract | Use when |
 |---|---|---|
-| Deterministic (same input → same output) | No (random graph) | **Yes** |
-| Proves every exclusion | No | **Yes** (Cauchy-Schwarz) |
-| Bound violations | Not measurable | **0** |
-| Rebuild speed (1M) | ~40 s | **~2.6 s** |
-| Exact-recall ceiling reachable | No | **Yes** (post-filter) |
+| `"cosine"` (default) | uint8 representing **normalized** embeddings (unit L2 norm) | Your vectors are embeddings (SBERT, etc.). This matches the Winnex stack. |
+| `"l2"` | raw uint8 values (BIGANN-style, non-normalized) | Your data is raw uint8 and you want exact L2 semantics. |
+
+### Choosing `quant`
+
+| `quant` | Memory | Fidelity |
+|---|---|---|
+| `"int8"` (default) | ~4× less memory (projections stored as int8) | Bound stays exact (quantization margin added); recall preserved. |
+| `"none"` | float32 projections | Exact float32 — maximum fidelity, more memory. |
+
+### Choosing `stage1_dim` / `stage2_dim`
+
+The two-stage cascade is the Winnex architecture: a **wide bound B1** (Stage-1,
+cheap) prunes to `k1`, then a **tight bound B2** (Stage-2, more expensive)
+prunes to `k2`. Set `stage2_dim=0` for a single-stage engine (BIGANN-L2
+baseline). **Pruning always uses the tightest available bound** — modulation is
+used only for ranking, never for pruning (the stack's FIX(1) invariant).
+
+### Choosing `modulation`
+
+When `True`, survivors are ranked by `B1 + α·(B2−B1)` with
+`α = sigmoid((e1−e2)/mean(e1))` — the error-backpropagation refinement. This
+improves ranking quality without ever sacrificing the 0-violation guarantee.
+Set `False` to rank purely by the bound.
+
+### Choosing `postfilter`
+
+When `True`, the exact metric is re-computed on the surviving top-k2, so the
+final result is the **true top-K of the surviving set**. This closes the gap
+between bound ranking and exact ranking. Leave it on unless you need speed.
 
 ## API
 
-### `winnex_madhava.build_engine(corpus, *, dim=None, stage1_dim=64, k=10, k1_fraction=0.05, postfilter=True, seed=42) -> MadhavaL2`
+### `winnex_madhava.build_engine(corpus, **kwargs) -> MadhavaL2`
 
-Build an index over a `(n, dim)` uint8 array.
-
-- `dim` — vector dimensionality (defaults to `corpus.shape[1]`).
-- `stage1_dim` — dimensionality of the Stage-1 QR projection (64 by default).
-- `k` — number of results to return.
-- `k1_fraction` — fraction of the corpus kept after Stage-1 pruning (0.05 = 5%).
-- `postfilter` — when `True`, exact L2 is computed on the survivors so the
-  result matches the exact top-K of the surviving set.
+Build an engine over a `(n, dim)` uint8 array. See [Parameter guide](#parameter-guide).
 
 ### `engine.search(query: np.ndarray) -> SearchResult`
 
-Returns `indices`, `latency_ms`, `k1`, `k3`, `bound_pairs`, `bound_violations`.
+Returns `indices`, `latency_ms`, `k1`, `k2`, `k3`, `bound_pairs`,
+`bound_violations`, `modulation_gain`.
 
 ### `engine.search_exact(query: np.ndarray) -> SearchResult`
 
-Exhaustive L2 scan over all N vectors — the **recall ceiling** of your corpus.
+Exhaustive scan over all N vectors — the **recall ceiling** of your corpus.
 Use it to measure how close an approximate index gets to the physical limit.
 
 ### `winnex_madhava.benchmark_vs_groundtruth(engine, queries, gt_ids, *, query_alignment=1, k=None) -> dict`
@@ -159,8 +210,12 @@ Evaluate against ground-truth id lists. Returns `recall_at_k`, `ndcg_at_k`,
 
 ### Metrics
 
-- `winnex_madhava.recall_at_k(result, gt_set, k)`
-- `winnex_madhava.ndcg_at_k(result, gt_set, k)`
+- `winnex_madhava.recall_at_k(result, gt_set, k)` — robust recall@K:
+  `|result[:K] ∩ gt| / min(K, |gt|)`. Normalizes by `min(K, |gt|)` so a
+  perfect scan scores exactly 1.0 even when the ground truth has fewer than K
+  relevant ids in the subset.
+- `winnex_madhava.ndcg_at_k(result, gt_set, k)` — NDCG@K with the same
+  `min(K, |gt|)` normalization.
 - `winnex_madhava.read_bigann_groundtruth(path, n_queries)`
 
 ## The mathematics
@@ -189,8 +244,9 @@ the bound on `⟨v, q⟩` becomes a **lower bound on L2²**:
 by smallest L2². Any vector pruned here is *mathematically proven* not to be
 in the exact top-K. Bound violations = **0 by construction**.
 
-**Post-filter** (optional) computes the exact L2² on the surviving top-k1 and
-returns the true top-K. Because Stage 1 never prunes a real neighbor, the
+**Stage 2** (optional) applies a tighter bound B2 on the k1 survivors. **Post-filter**
+computes the exact metric on the surviving top-k2, so the result is the true
+top-K of the surviving set. Because Stage 1/2 never prune a real neighbor, the
 post-filter recovers **everything a perfect scan would find**.
 
 The residual `‖v − PᵀPv‖` is computed on the **real float32 projection**, not
@@ -200,97 +256,82 @@ makes the bound exact rather than approximate.
 ## Benchmarks
 
 Verified 2026-08-04 against the **official BIGANN-100M L2 ground truth** on a
-CPU-only machine (28 threads, AVX2+FMA).
+CPU-only machine (28 threads, AVX2+FMA), using 200 queries for statistical
+robustness.
 
-### "Prova dos 9" no 100M — topo da categoria para buscas exatas via bounding
+### "Prova dos 9" — exact-scan ceiling at 100M
 
-O Madhava atinge **R@10 = 0.8360** com **NDCG = 0.8611** no dataset oficial
-(100M, 200 queries — estatisticamente robusto), **varrendo o teto do scan
-exato** — alcança exatamente o que um scan exaustivo perfeito alcançaria, com
-**0 violações de bound** e garantia matemática por documento.
+Against the **official BIGANN L2 ground truth**, `winnex-madhava` reaches
+**R@10 = 0.8360, NDCG = 0.8611 at 100M** — **exactly the exact-scan ceiling**,
+with 0 bound violations and a per-document mathematical guarantee.
 
-| Scale | Exact-scan ceiling<br>(R@10) | winnex-madhava<br>(R@10) | NDCG | Efficiency |
+| Scale | Exact-scan ceiling (R@10) | winnex-madhava (R@10) | NDCG | Efficiency |
 |---|---|---|---|---|
 | 10M | 0.5225 | **0.5225** | 0.5796 | **100%** |
 | 100M | 0.8360 | **0.8360** | 0.8611 | **100%** |
 
-O **ceiling** é `search_exact` — um scan exaustivo perfeito sobre o mesmo
-subset. O winnex-madhava atinge **100% do ceiling em 10M e 100M**, com **0
-violações de bound** em todas as escalas. Nenhum outro índice (HNSW, IVF,
-IVF-PQ) alcança o teto do subset — o Madhava é o único com garantia
-matemática.
+The **ceiling** is `search_exact` — a perfect exhaustive scan over the same
+subset. winnex-madhava reaches **100% of the ceiling at 10M and 100M**, with
+**0 bound violations** at every scale. No other index (HNSW, IVF, IVF-PQ)
+reaches the ceiling — only winnex-madhava combines exactness with a proof.
 
-> **Definição de recall (robusta).** As métricas usam:
-> `recall@K = |resultado[:K] ∩ GT_subset| / min(K, |GT_subset|)`, onde
-> `GT_subset` são todos os ids do GT oficial presentes no subset. Isso
-> intersecta com **todo** o conjunto relevante (não só os top-k) e normaliza
-> por `min(K, |GT_subset|)` — um scan exato perfeito atinge **exatamente 1.0**
-> mesmo quando o subset tem menos de K relevantes. Sem isso, uma definição que
-> divide por K fixo penaliza artificialmente (produzia 0.404 em 10M).
+> **Recall definition (robust).** We use
+> `recall@K = |result[:K] ∩ GT_subset| / min(K, |GT_subset|)`, where
+> `GT_subset` is all official GT ids present in the subset. This intersects
+> with the *entire* relevant set (not just the top-K) and normalizes by
+> `min(K, |GT_subset|)` — so a perfect exact scan scores **exactly 1.0** even
+> when the subset holds fewer than K relevant ids. A definition that divides
+> by fixed K artificially penalizes such queries.
 
-### Kaggle benchmark (reproducible — pip install)
+### The 10M subset mystery — ground-truth coverage
 
-Rode você mesmo o benchmark com um clique no Kaggle: o notebook instala
-`winnex-madhava` v1.1.3 do PyPI, indexa 10M/100M do BIGANN e reporta o teto do
-scan exato vs o Madhava, com a tabela de eficiência:
+> **Read this before interpreting any BIGANN number.**
 
-[![Kaggle](https://img.shields.io/badge/Kaggle-winnex--madhava%201.1.3%20100M-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-113)
+The official BIGANN-100M ground truth was generated over the **full 1B-vector
+space**. When you restrict the corpus to a subset of N vectors, not all true
+neighbors exist inside the subset:
 
-### O mistério do subset 10M resolvido — a Cobertura do GT
-
-> **Esta seção é obrigatória para entender qualquer número do BIGANN.**
-
-O ground-truth oficial do BIGANN-100M foi gerado no **corpus completo (1B
-vetores)**. Quando restringimos o corpus a um subset de N vetores, nem todos os
-vizinhos verdadeiros existem dentro do subset:
-
-| Escala | Cobertura do GT (top-20) | Significado |
+| Scale | GT coverage (top-20) | Meaning |
 |---|---|---|
-| 1M | 1.2% | Comparação semanticamente vazia |
-| 10M | 10.5% | Esparsa; recall limitado pelo subset |
-| 100M | 100% | GT completo — única escala válida |
+| 1M | 1.2% | Semantically empty comparison |
+| 10M | 10.5% | Sparse; recall capped by the subset |
+| 100M | 100% | Complete GT — the only scale where recall is fully meaningful |
 
-**Consequência:** em 10M, apenas ~10.5% dos vizinhos reais existem, então até
-um scan exato perfeito fica em **R@10 ≈ 0.49** (o teto matemático do subset,
-com a definição robusta de recall). **Nenhum índice** — exato ou aproximado —
-pode superar isso no subset. É por isso que a "eficiência de 100%" é relativa
-ao *ceiling do subset*, não a um recall absoluto de 1.0. Em 100M (cobertura
-100%), o Madhava atinge **0.8360** — o recall real do dataset.
+**Consequence:** at 10M only ~10.5% of true neighbors exist, so even a perfect
+exact scan caps at **R@10 ≈ 0.52** (the subset's mathematical ceiling). **No
+index** — exact or approximate — can beat that on the subset. That is why
+"100% efficiency" is relative to the *subset ceiling*, not an absolute recall
+of 1.0. At 100M (100% coverage), winnex-madhava reaches **0.8360** — essentially
+all the recall the dataset offers.
 
-### Build vs Latency — o trade-off honesto
+### Build vs Latency — the honest trade-off
 
-| Método (subset 10M) | R@10 | Build (s) | Latência (ms) |
+| Method (10M subset) | R@10 | Build (s) | Latency (ms) |
 |---|---|---|---|
 | **winnex-madhava** | **0.5225** | **23.7** (Kaggle) / **1.0** (local) | 515 |
 | IVF nprobe=128 | 0.4060 | 170 | 9.3 |
 | IVF-PQ m=64 | 0.3920 | 90 | 24.1 |
 | HNSW ef=256 | 0.2940 | 1025 | 1.0 |
-| FlatL2 (exato) | 0.5225 | — | 617 |
+| FlatL2 (exact) | 0.5225 | — | 617 |
 
-O Madhava usa um **bound matemático** para podar, varrendo todos os vetores
-sem construir grafo/índice. Isso custa latência por query (centenas de ms), mas
-o **build é ultra-rápido** (1.1s local em 10M vs 1025s do HNSW — ~930× mais
-rápido, com AVX2/FMA no wheel).
+winnex-madhava **scans all vectors** with a mathematical bound (higher latency
+per query), but the **build is ultra-fast** — no graph to construct. Build 10M
+≈ **1s** locally (AVX2/FMA) vs HNSW ≈ 1025s (~930× faster). At 100M, the build
+is ~227s — less time than HNSW needs to index just 5M vectors.
 
-**Use-case claro do pacote:** ingestão contínua, RAG dinâmico (corpus que muda
-com frequência), batch processing e ambientes com restrição de RAM/CPU, onde os
-rebuilds de índices baseados em grafo (HNSW) são proibitivos. Para latência de
-serving pura, use HNSW/IVF — o Madhava é para onde "rápido mas sem prova" é um
-passivo.
+## Kaggle benchmark (reproducible)
 
-Reproduce:
+Run it yourself with one click — the notebook installs `winnex-madhava` v1.1.3
+from PyPI, indexes 10M/100M of BIGANN, and reports the exact-scan ceiling vs
+the Madhava result, plus a side-by-side comparison with FAISS HNSW/IVF/IVF-PQ
+using the same robust recall function:
 
-```bash
-python -m winnex_madhava.benchmark --n 10000000 --nq 50
-```
+[![Kaggle](https://img.shields.io/badge/Kaggle-pip--200--queries-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-200-queries)
 
-Or via the C++ executable:
-
-```bash
-./build/winnex_madhava_bench bigann_data/base.u8bin \
-    bigann_data/unif_query_10k.u8bin \
-    bigann_data/unif_groundtruth_10k.bin 100000000 50 0.05
-```
+Related public benchmarks:
+- [winnex-madhava-pip-200-queries](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-200-queries) — official L2 GT, 200 queries, 10M/100M
+- [winnex-madhava-faiss-benchmark](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-faiss-benchmark) — side-by-side with FAISS HNSW/IVF/IVF-PQ
+- [winnex-madhava-pip-113](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-113) — v1.1.3 wheel (AVX2/FMA build)
 
 ## Limitations (read this first)
 
@@ -317,8 +358,7 @@ engine = winnex_madhava.build_engine(corpus, dim=128, k=10)    # truncated to ui
 If you pass a `float32` corpus, `build_engine` **truncates** it to `uint8` via
 `astype(np.uint8)` — values like `0.09` become `0`, `3.44` becomes `3`. The
 engine will still run and report `bound_violations == 0`, but the recall can
-collapse (we measured ~5–10% R@10 on random gaussian floats vs ~100% on proper
-uint8). **This is not a bug — it is the documented input contract.** Use
+collapse. **This is not a bug — it is the documented input contract.** Use
 winnex-madhava on uint8 (BIGANN-style) data, or quantize your floats to uint8
 yourself and search in that space.
 
@@ -334,9 +374,8 @@ unsupported wheel path.
 not in the exact top-K.* It does **not** mean the returned top-K is the true
 top-K. If `k1_fraction` is too small (e.g. 0.001 on a hard dataset), the
 survivors may be a weak sample and recall drops — still with 0 violations.
-The bound is sound, but pruning quality depends on `stage1_dim` and
-`k1_fraction`. Tune them on your data (see [Benchmarks](#benchmarks) for
-typical values).
+The bound is sound, but pruning quality depends on `stage1_dim`, `stage2_dim`
+and `k1_fraction`. Tune them on your data.
 
 ### Lower-dimensional / tiny corpora
 
@@ -347,7 +386,7 @@ On tiny corpora or d < ~8 the projection overhead dominates and an exact
 ### No GPU / no persistence yet
 
 The engine is CPU-only and keeps the index in memory; there is no
-serialize/load API in v1.0.0. Rebuild per process.
+serialize/load API in the current version. Rebuild per process.
 
 ## Honest comparison
 
@@ -357,7 +396,7 @@ We are explicit about where winnex-madhava **does not** win:
 |---|---|---|
 | Lowest latency (sub-ms) | HNSW | HNSW ≈ 0.45 ms vs madhava ≈ 2.7 ms at 50K×1536D |
 | **Provable completeness** | **winnex-madhava** | Only engine with 0 bound violations + per-doc proof |
-| Frequent index rebuilds | **winnex-madhava** | Build ≈ 2.6 s (1M) vs HNSW ≈ 40 s |
+| Frequent index rebuilds | **winnex-madhava** | Build ≈ 1 s (10M) vs HNSW ≈ 1025 s |
 | Regulated / auditable retrieval | **winnex-madhava** | Deterministic, per-document audit trail |
 
 **If you need raw speed, use HNSW — it is excellent.** winnex-madhava is for the
@@ -382,7 +421,24 @@ python -m pytest tests/python/
 
 ## License
 
-**Business Source License 1.1** — same as the Winnex stack. Free to use for
-evaluation and non-production work. Commercial use requires a license.
+**Business Source License 1.1 (BSL 1.1)** — the same license as the rest of the
+Winnex stack.
+
+### What BSL 1.1 means for you
+
+- **Free to use** for **evaluation and non-production work** — study, test,
+  prototype, benchmark. This is the recommended way to start.
+- **Not free** for **commercial / production use** (a "Search Service" that
+  exposes the functionality to third parties as a service). That requires a
+  **commercial license** from Winnex.
+- **Change date:** the license converts to **GPL v2.0 or later** on the change
+  date (see the full license text), at which point the standard open-source
+  terms apply.
+
+**How to get a commercial license:** email `pay@winnex.ai`. The Winnex team
+will issue a license agreement for your use case (ISV embedding, database
+vendor, platform company, or internal production deployment).
+
+### Contact
 
 `pay@winnex.ai` · Winnex Brasil Soluções Empresariais LTDA-ME · Goiânia, Brazil
