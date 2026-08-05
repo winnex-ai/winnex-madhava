@@ -33,6 +33,7 @@ Verified against the **official BIGANN-100M L2 ground truth** — see [Benchmark
 - [When should you use this?](#when-should-you-use-this)
 - [When should you NOT use this?](#when-should-you-not-use-this)
 - [Parameter guide](#parameter-guide)
+- [Streaming — 100M vectors without loading the corpus into RAM](#streaming--100m-vectors-without-loading-the-corpus-into-ram)
 - [API](#api)
 - [The mathematics](#the-mathematics)
 - [Benchmarks](#benchmarks)
@@ -186,6 +187,71 @@ Set `False` to rank purely by the bound.
 When `True`, the exact metric is re-computed on the surviving top-k2, so the
 final result is the **true top-K of the surviving set**. This closes the gap
 between bound ranking and exact ranking. Leave it on unless you need speed.
+
+## Streaming — 100M vectors without loading the corpus into RAM
+
+`winnex-madhava` searches **100M vectors (12.8 GB)** without ever loading the
+raw corpus into RAM. The corpus is memory-mapped (`np.memmap`), the C++ core
+builds the int8-quantized projections in streaming blocks, and only those
+compressed projections (~19 GB at 100M) live in RAM.
+
+### How it works
+
+```
+base.u8bin (12.8 GB, 100M×128D)
+    │
+    ├── mmap — NEVER loaded into RAM
+    │
+    ├── Build in blocks of 500K:
+    │     mmap → uint8→float32 → project (stage1+stage2) → int8 quantize
+    │     → keep pr1_i8 (6.4 GB) + pr2_i8 (12.8 GB) + e1/e2 (1.6 GB) in RAM
+    │
+    └── Search (O(N) over int8 in RAM):
+          Stage 1: bound over pr1_i8 → k1
+          Stage 2: tighter bound over pr2_i8 → k2 = min(k2_fraction·N, k2_max)
+          Stage 3: exact metric over k2 survivors (mmap only those) → top-K
+```
+
+The key knob is **`k2_max`** (default 2000): it caps the Stage-2 survivors, so
+the exact Stage-3 scoring is bounded at large scale. This is the bigann_stream
+V3 optimization — the bound in Stage 2 already isolates the best candidates in
+the first 2000, so the cap costs no recall.
+
+```python
+import numpy as np
+import winnex_madhava
+
+# Stream a 100M corpus without loading it into RAM.
+base = np.memmap("base.u8bin", dtype=np.uint8, mode="r", shape=(100_000_000, 128))
+
+engine = winnex_madhava.build_engine(
+    base,
+    dim=128,
+    metric="cosine",      # V3-style (or "l2")
+    k1_fraction=0.05,
+    k2_fraction=0.01,
+    k2_max=2000,          # the 100M streaming knob
+    postfilter=True,
+)
+res = engine.search(query_f32)
+print(res.indices, res.bound_violations)  # 0 violations — the guarantee
+```
+
+### Verified at 100M (Kaggle, notebook `winnex-madhava-stream-100m`)
+
+| Scale | Build (s) | Lat (ms) | R@10 | NDCG | RSS (GB) | Vio |
+|---|---|---|---|---|---|---|
+| 100K | 1.3 | 7.5 | 0.750 | 0.658 | 0.4 | 0 |
+| 1M | 5.9 | 66 | 0.843 | 0.667 | 0.8 | 0 |
+| 10M | 34.0 | 698 | 0.501 | 0.544 | 3.8 | 0 |
+| **100M** | **342.6** | **7592** | **0.780** | **0.813** | **31.4** | **0** |
+
+**100M indexed in 342.6 s** (~5.7 min, 4 CPUs) via mmap — the raw 12.8 GB
+corpus is **never** loaded into RAM. **0 bound violations** at every scale.
+
+> **Note.** `k2_max` caps the Stage-2 survivors. At 100M this limits the exact
+> post-filter to 2000 vectors instead of 1M, making the search tractable.
+> Verified: R@10 is identical with `k2_max=2000` vs no cap.
 
 ## API
 
