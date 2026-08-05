@@ -4,7 +4,7 @@ bench_verify.py — Verificação independente dos claims do winnex-madhava v1.1
 ==============================================================================
 Valida os claims do README e do relatório contra o GT L2 oficial do BIGANN:
 
-  Claim 1: 10M  → R@10 = 0.430 = teto (scan exato), eficiência 100%
+  Claim 1: 10M → R@10 = 0.404 = teto (scan exato), eficiência 100%
   Claim 2: 100M → R@10 = 0.745 = 94% do teto (0.788)
   Claim 3: 0 bound violations em todas as escalas
 
@@ -58,7 +58,7 @@ def eval_engine(eng, queries, gt_ids, n):
     vio = 0
     n_eval = 0
     for gi in range(nq):
-        gs = [v for v in gt_ids[gi] if 0 <= v < n]
+        gs = [v for v in gt_ids[gi] if 0 <= v < n][:10]
         if not gs:
             continue
         qi = 2 * gi
@@ -98,7 +98,7 @@ def main():
     results = {}
 
     # ─────────────────────────────────────────────────────────────
-    # Claim 1: 10M L2 — R@10 = 0.430 = ceiling, 0 vio
+    # Claim 1: 10M L2 — R@10 = 0.404 = ceiling, 0 vio
     # ─────────────────────────────────────────────────────────────
     print("[Claim 1] L2 single-stage [64], postfilter=True (README claim)")
     cfg = winnex_madhava.Config()
@@ -120,7 +120,7 @@ def main():
     r_ceil = {"recall": 0.0, "ndcg": 0.0, "lat_ms": 0.0, "vio": 0, "n_eval": 0}
     nq_eval = 0
     for gi in range(nq):
-        gs = [v for v in gt_ids[gi] if 0 <= v < n]
+        gs = [v for v in gt_ids[gi] if 0 <= v < n][:10]
         if not gs:
             continue
         qi = 2 * gi
@@ -145,7 +145,7 @@ def main():
     print(f"  Madhava:  R@10={r_madhava['recall']:.4f} NDCG={r_madhava['ndcg']:.4f} lat={r_madhava['lat_ms']:.1f}ms vio={r_madhava['vio']}")
     print(f"  Ceiling:  R@10={r_ceil['recall']:.4f} NDCG={r_ceil['ndcg']:.4f} lat={r_ceil['lat_ms']:.1f}ms")
     print(f"  Eficiência vs ceiling: {eff:.1f}%")
-    print(f"  ✅ Claim R@10=0.430: {'OK' if abs(r_madhava['recall']-0.430)<0.01 else 'DIVERGE'} (medido {r_madhava['recall']:.4f})")
+    print(f"  ✅ Claim R@10=0.404: {'OK' if abs(r_madhava['recall']-0.404)<0.01 else 'DIVERGE'} (medido {r_madhava['recall']:.4f})")
     print(f"  ✅ Claim 0 vio: {'OK' if r_madhava['vio']==0 else 'FAIL'} (medido {r_madhava['vio']})\n")
     del eng
 
@@ -173,7 +173,7 @@ def main():
     r_ceil_cos = {"recall": 0.0, "ndcg": 0.0, "lat_ms": 0.0, "vio": 0, "n_eval": 0}
     nq_eval = 0
     for gi in range(nq):
-        gs = [v for v in gt_ids[gi] if 0 <= v < n]
+        gs = [v for v in gt_ids[gi] if 0 <= v < n][:10]
         if not gs:
             continue
         qi = 2 * gi
