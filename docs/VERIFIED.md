@@ -33,6 +33,23 @@ truth.** winnex-madhava reaches **100% of that ceiling** at both scales.
 
 ---
 
+## 1b. Streaming at 100M (v1.2.0)
+
+Verified on Kaggle (notebook `winnex-madhava-stream-100m`), 4 CPUs, V3-style
+cosine (`metric='cosine'`, `normalize_input=True`, `k2_max=2000`), corpus
+memory-mapped (12.8 GB never loaded into RAM):
+
+| Scale | Build (s) | Lat (ms) | R@10 | NDCG | RSS (GB) | Vio |
+|---|---|---|---|---|---|---|
+| 100K | 1.3 | 7.5 | 0.750 | 0.658 | 0.4 | 0 |
+| 1M | 5.9 | 66 | 0.843 | 0.667 | 0.8 | 0 |
+| 10M | 34.0 | 698 | 0.501 | 0.544 | 3.8 | 0 |
+| **100M** | **342.6** | **7592** | **0.780** | **0.813** | **31.4** | **0** |
+
+**100M indexed in 342.6 s** (~5.7 min) via mmap, 0 bound violations.
+
+---
+
 ## 2. Reproduce it yourself
 
 The package ships a benchmark CLI:
