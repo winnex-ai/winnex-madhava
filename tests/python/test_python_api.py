@@ -114,6 +114,22 @@ def test_metrics():
     assert winnex_madhava.recall_at_k([], gt, 3) == 0.0
 
 
+def test_recall_robust_fewer_relevant():
+    """Recall@K robusto: com |gt| < k, um resultado perfeito atinge 1.0."""
+    gt = [5, 7]  # apenas 2 relevantes, k=5
+    perfect = [5, 7, 100, 200, 300]
+    assert winnex_madhava.recall_at_k(perfect, gt, 5) == 1.0
+    assert abs(winnex_madhava.ndcg_at_k(perfect, gt, 5) - 1.0) < 1e-9
+
+
+def test_recall_robust_all_relevant():
+    """Intersecta com TODO o conjunto relevante, não só os top-k do GT."""
+    gt = [5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27]  # 12 relevantes
+    result = [5, 7, 9, 11, 13, 15, 17, 19, 21, 23]  # acha 10, perde 25, 27
+    # Definição robusta: |result[:10] ∩ gt| / 10 = 10/10 = 1.0
+    assert winnex_madhava.recall_at_k(result, gt, 10) == 1.0
+
+
 def test_benchmark_vs_groundtruth(engine):
     q = np.random.default_rng(1).integers(0, 256, size=(2, 64), dtype=np.uint8).astype(np.float32)
     res = engine.search(q[0])

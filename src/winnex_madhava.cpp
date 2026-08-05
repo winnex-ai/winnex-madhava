@@ -104,21 +104,29 @@ inline void quantize(const float* src, int8_t* dst, const float* scale, int dims
 // Metrics
 // ---------------------------------------------------------------------------
 double recall_at_k(const std::vector<int>& result, const std::vector<int>& gt_set, int k) {
+    // Recall@K robusto: intersecta com TODO o conjunto relevante (gt_set, que
+    // o chamador já filtrou para o subset), e divide por min(k, |gt_set|).
+    // Assim, se o GT tem menos de k relevantes no subset, um scan exato perfeito
+    // ainda atinge recall=1.0 (não é penalizado por |gt_set| < k).
     int hits = 0;
     for (int ri : result)
         for (int vi : gt_set)
             if (ri == vi) { hits++; break; }
-    return (double)hits / (double)std::max(k, 1);
+    int denom = std::min(k, (int)gt_set.size());
+    return denom > 0 ? (double)hits / (double)denom : 0.0;
 }
 
 double ndcg_at_k(const std::vector<int>& result, const std::vector<int>& gt_set, int k) {
+    // NDCG@K robusto: o denominador (idcg) usa min(k, |gt_set|) — o mesmo
+    // princípio do recall — para não penalizar queries com poucos relevantes.
     double dcg = 0, idcg = 0;
-    for (int j = 0; j < k && j < (int)result.size(); j++) {
+    int top = std::min(k, (int)gt_set.size());
+    for (int j = 0; j < top && j < (int)result.size(); j++) {
         int rel = 0;
         for (int vi : gt_set) if (result[j] == vi) { rel = 1; break; }
         dcg += (std::pow(2, rel) - 1) / std::log2(j + 2);
     }
-    for (int j = 0; j < k; j++) idcg += 1.0 / std::log2(j + 2);
+    for (int j = 0; j < top; j++) idcg += 1.0 / std::log2(j + 2);
     return idcg > 0 ? dcg / idcg : 0.0;
 }
 

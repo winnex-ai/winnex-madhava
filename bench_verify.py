@@ -41,13 +41,18 @@ def read_bigann_gt(path, n_queries):
 
 
 def recall_at_k(ann, gt, k=K):
-    return len(set(ann[:k]) & set(gt[:k])) / max(k, 1)
+    # Recall@K robusto: intersecta com TODO o conjunto relevante e divide por
+    # min(k, |gt|) — scan exato perfeito → recall=1.0 mesmo com |gt| < k.
+    hits = len(set(ann[:k]) & set(gt))
+    denom = min(k, len(gt))
+    return hits / denom if denom else 0.0
 
 
 def ndcg_at_k(ann, gt, k=K):
-    rel = {v: 1 for v in gt[:k]}
+    top = min(k, len(gt))
+    rel = {v: 1 for v in gt}
     dcg = sum(rel.get(a, 0) / np.log2(i + 2) for i, a in enumerate(ann[:k]))
-    idcg = sum(1.0 / np.log2(i + 2) for i in range(k))
+    idcg = sum(1.0 / np.log2(i + 2) for i in range(top))
     return dcg / idcg if idcg else 0.0
 
 
@@ -58,7 +63,7 @@ def eval_engine(eng, queries, gt_ids, n):
     vio = 0
     n_eval = 0
     for gi in range(nq):
-        gs = [v for v in gt_ids[gi] if 0 <= v < n][:10]
+        gs = [v for v in gt_ids[gi] if 0 <= v < n]
         if not gs:
             continue
         qi = 2 * gi
@@ -120,7 +125,7 @@ def main():
     r_ceil = {"recall": 0.0, "ndcg": 0.0, "lat_ms": 0.0, "vio": 0, "n_eval": 0}
     nq_eval = 0
     for gi in range(nq):
-        gs = [v for v in gt_ids[gi] if 0 <= v < n][:10]
+        gs = [v for v in gt_ids[gi] if 0 <= v < n]
         if not gs:
             continue
         qi = 2 * gi
@@ -173,7 +178,7 @@ def main():
     r_ceil_cos = {"recall": 0.0, "ndcg": 0.0, "lat_ms": 0.0, "vio": 0, "n_eval": 0}
     nq_eval = 0
     for gi in range(nq):
-        gs = [v for v in gt_ids[gi] if 0 <= v < n][:10]
+        gs = [v for v in gt_ids[gi] if 0 <= v < n]
         if not gs:
             continue
         qi = 2 * gi

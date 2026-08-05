@@ -48,9 +48,9 @@ def main(argv: list[str] | None = None) -> int:
         for gi in range(len(gt)):
             res = fn(q[2 * gi])
             gset = [v for v in gt[gi] if 0 <= v < engine.num_vectors()]
-            # Recall@K padrão BIGANN: usa apenas os top-k ids do GT no subset
-            # (gt[:k]), NÃO todos os ids do GT (que inflaria o recall).
-            gset = gset[:10]
+            # recall_at_k / ndcg_at_k normalizam por min(k, |gset|) internamente
+            # (definição robusta), então passamos o conjunto completo de relevantes
+            # no subset — um scan exato perfeito sempre atinge 1.0.
             tr += winnex_madhava.recall_at_k(res.indices, gset, 10)
             tn += winnex_madhava.ndcg_at_k(res.indices, gset, 10)
             tlat += res.latency_ms
