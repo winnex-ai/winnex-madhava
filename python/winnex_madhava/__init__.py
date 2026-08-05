@@ -74,15 +74,19 @@ def _attach_buffer(engine, arr):
 Config = _native.Config
 SearchResult = _native.SearchResult
 MadhavaL2 = _native.MadhavaL2
+Metric = _native.Metric
+QuantMode = _native.QuantMode
 recall_at_k = _native.recall_at_k
 ndcg_at_k = _native.ndcg_at_k
 read_bigann_groundtruth = _native.read_bigann_groundtruth
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 __all__ = [
     "Config",
     "SearchResult",
     "MadhavaL2",
+    "Metric",
+    "QuantMode",
     "recall_at_k",
     "ndcg_at_k",
     "read_bigann_groundtruth",
@@ -96,13 +100,21 @@ def build_engine(
     corpus: np.ndarray,
     *,
     dim: int | None = None,
+    metric: str = "cosine",
+    quant: str = "int8",
     stage1_dim: int = 64,
+    stage2_dim: int = 128,
     k: int = 10,
     k1_fraction: float = 0.05,
+    k2_fraction: float = 0.01,
+    modulation: bool = True,
     postfilter: bool = True,
+    normalize_input: bool = True,
     seed: int = 42,
 ) -> MadhavaL2:
-    """Build a MadhavaL2 engine over a uint8 corpus.
+    """Build a Winnex Madhava engine over a uint8 corpus.
+
+    Parametrizable across the Winnex stack (v17, Madhava-Sec, HMC v7):
 
     Parameters
     ----------
@@ -111,6 +123,28 @@ def build_engine(
         during build; the caller must keep it alive while the engine is used.
     dim : int, optional
         Vector dimensionality. Defaults to ``corpus.shape[1]``.
+    metric : str, default 'cosine'
+        'cosine' (stack default: normalized embeddings) or 'l2' (raw uint8).
+    quant : str, default 'int8'
+        'int8' (fast, memory-light) or 'none' (float32 exact).
+    stage1_dim : int, default 64
+        Stage-1 QR projection (wide bound B1).
+    stage2_dim : int, default 128
+        Stage-2 QR projection (tight bound B2); 0 disables the cascade.
+    k : int, default 10
+        Number of results to return.
+    k1_fraction : float, default 0.05
+        Stage-1 keep fraction.
+    k2_fraction : float, default 0.01
+        Stage-2 keep fraction (only if stage2_dim > 0).
+    modulation : bool, default True
+        Error-backprop ranking: prune by tight bound B2, rank by B1+α(B2−B1).
+    postfilter : bool, default True
+        Exact-metric re-score on the surviving candidates.
+    normalize_input : bool, default True
+        L2-normalize each vector at build (used when metric='cosine').
+    seed : int, default 42
+        PRNG seed for the MGS projections.
     """
     arr = np.ascontiguousarray(corpus, dtype=np.uint8)
     if arr.ndim != 2:
@@ -119,10 +153,16 @@ def build_engine(
         dim = arr.shape[1]
     cfg = Config()
     cfg.dim = int(dim)
+    cfg.metric = Metric.COSINE if metric.lower() == "cosine" else Metric.L2
+    cfg.quant = QuantMode.INT8 if quant.lower() == "int8" else QuantMode.NONE
     cfg.stage1_dim = int(stage1_dim)
+    cfg.stage2_dim = int(stage2_dim)
     cfg.k = int(k)
     cfg.k1_fraction = float(k1_fraction)
+    cfg.k2_fraction = float(k2_fraction)
+    cfg.modulation = bool(modulation)
     cfg.postfilter = bool(postfilter)
+    cfg.normalize_input = bool(normalize_input)
     cfg.seed = int(seed)
     engine = MadhavaL2(cfg)
     n = engine.build_numpy(arr)

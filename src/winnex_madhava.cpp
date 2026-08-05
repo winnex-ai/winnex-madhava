@@ -1,22 +1,23 @@
 /**
- * winnex_madhava.cpp — implementation of the Madhava L2 C++ Library
- * ==============================================================
- * See winnex_madhava.hpp for the API and the mathematical guarantee.
+ * winnex_madhava.cpp — implementation of the Winnex Madhava Engine
+ * =================================================================
+ * Deterministic vector search with Cauchy-Schwarz bounds, parametrizable
+ * across the Winnex stack:
  *
- * Stage 1 (bound pruning):
- *   For every vector v, compute the Cauchy-Schwarz upper bound of ⟨v,q⟩:
- *     ub = ⟨Pv,Pq⟩ + e(v)·e(q) + quantization_margin
- *   Convert to a lower bound of L2²:
- *     lb = ‖v‖² + ‖q‖² − 2·ub
- *   Keep the top-k1 smallest lb (the candidates most likely to be near).
- *   This is a mathematical guarantee: any vector with lb above the
- *   k1-th smallest cannot be in the exact top-K.
- *
- * Post-filter (optional):
- *   Compute the exact L2² on the surviving top-k1 and return the top-K.
- *   This closes the gap between bound ranking and exact L2 ranking,
- *   without ever losing a vector that the bound could have pruned
- *   correctly (the bound never prunes a true neighbor).
+ *   - Metric 'cosine' (stack default): normalizes each raw uint8 vector to
+ *     unit norm at build time, then works in inner-product space. This is
+ *     what v17, Madhava-Sec, and the HMC v7 notebook do.
+ *   - Metric 'l2': works on raw uint8, converts the inner-product upper bound
+ *     into a lower bound of L2² (BIGANN-style).
+ *   - Cascade [stage1, stage2]: Stage-1 wide bound B1 prunes to k1; if a
+ *     Stage-2 projection is configured, a tighter bound B2 prunes to k2.
+ *     Pruning ALWAYS uses the tightest available bound (stack FIX(1)).
+ *   - Modulation: ranks survivors by B1 + α·(B2−B1) with
+ *     α = sigmoid((e1−e2)/mean(e1)) — the error-backpropagation refinement.
+ *     Never used for pruning; only for ranking (stack invariant).
+ *   - Quantization: 'int8' keeps per-axis scales + margins; 'none' uses the
+ *     float32 projection exactly (no quant margin).
+ *   - Post-filter: exact metric re-score on the surviving set.
  *
  * BSL 1.1 | pay@winnex.ai
  */
@@ -55,7 +56,9 @@ inline float dot_f32(const float* a, const float* b, int d) {
 #endif
 }
 
-inline float load_raw_norm(const uint8_t* src, float* dst, int d, float& norm) {
+// Load a raw uint8 vector into float32, computing its L2 norm.
+// Optionally normalizes to unit norm (cosine metric).
+inline float load_raw(const uint8_t* src, float* dst, int d, bool normalize) {
     float n = 0;
 #if defined(__AVX2__) && defined(__FMA__)
     __m256 nv = _mm256_setzero_ps();
@@ -78,8 +81,12 @@ inline float load_raw_norm(const uint8_t* src, float* dst, int d, float& norm) {
 #else
     for (int j = 0; j < d; j++) { dst[j] = src[j]; n += dst[j] * dst[j]; }
 #endif
-    norm = std::sqrt(n);
-    return norm;
+    n = std::sqrt(n);
+    if (normalize && n > 1e-10f) {
+        float inv = 1.0f / n;
+        for (int j = 0; j < d; j++) dst[j] *= inv;
+    }
+    return n;
 }
 
 inline void quantize(const float* src, int8_t* dst, const float* scale, int dims) {
@@ -150,24 +157,38 @@ std::vector<std::vector<int>> read_bigann_groundtruth(const std::string& path, i
 // ---------------------------------------------------------------------------
 // Engine
 // ---------------------------------------------------------------------------
-MadhavaL2::MadhavaL2(const Config& cfg) : cfg_(cfg) {}
+MadhavaL2::MadhavaL2(const Config& cfg) : cfg_(cfg) {
+    // Sanity: stage2_dim must be > stage1_dim for a meaningful cascade.
+    if (cfg_.stage2_dim > 0 && cfg_.stage2_dim <= cfg_.stage1_dim) {
+        // Keep the engine functional: promote stage2 to stage1+1 (bounded by dim).
+        cfg_.stage2_dim = std::min(cfg_.stage1_dim + 1, cfg_.dim);
+    }
+}
 
 MadhavaL2::~MadhavaL2() {
     delete[] P1_;
+    delete[] P2_;
     delete[] pr1_;
+    delete[] pr2_;
+    delete[] pr1_f_;
+    delete[] pr2_f_;
     delete[] pr1_scale_;
+    delete[] pr2_scale_;
     delete[] e1_;
+    delete[] e2_;
     delete[] vn_;
+    delete[] vn_eff_;
 }
 
 void MadhavaL2::build(const uint8_t* raw_base, int n) {
     base_ = raw_base;
     n_ = n;
     built_ = true;
-    int D = cfg_.dim, s1 = cfg_.stage1_dim;
+    int D = cfg_.dim, s1 = cfg_.stage1_dim, s2 = cfg_.stage2_dim;
+    bool normalize = (cfg_.metric == Metric::Cosine) && cfg_.normalize_input;
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    // 1. Build the QR-orthogonalized projection P1 via MGS.
+    // 1. Build the QR-orthogonalized projection(s) via MGS.
     P1_ = new float[(size_t)s1 * D];
     {
         std::mt19937 rng(cfg_.seed + s1);
@@ -186,52 +207,114 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
                 for (int j = 0; j < D; j++) P1_[i * D + j] /= nr;
         }
     }
+    if (s2 > 0) {
+        P2_ = new float[(size_t)s2 * D];
+        std::mt19937 rng2(cfg_.seed + s2);
+        std::normal_distribution<float> nd(0, 1);
+        for (int i = 0; i < s2; i++) {
+            for (int j = 0; j < D; j++) P2_[i * D + j] = nd(rng2);
+            for (int k = 0; k < i; k++) {
+                float dp = 0;
+                for (int j = 0; j < D; j++) dp += P2_[i * D + j] * P2_[k * D + j];
+                for (int j = 0; j < D; j++) P2_[i * D + j] -= dp * P2_[k * D + j];
+            }
+            float nr = 0;
+            for (int j = 0; j < D; j++) nr += P2_[i * D + j] * P2_[i * D + j];
+            nr = std::sqrt(nr);
+            if (nr > 1e-10f)
+                for (int j = 0; j < D; j++) P2_[i * D + j] /= nr;
+        }
+    }
 
     // 2. Allocate buffers.
-    pr1_ = new int8_t[(size_t)n * s1];
-    pr1_scale_ = new float[s1];
-    e1_ = new float[n];
+    // Memory-aware: with int8 quantization we store ONLY the int8 projections
+    // (no float32 copy) — this is the memory-light path used at 100M scale.
     vn_ = new float[n];
+    vn_eff_ = new float[n];
+    e1_ = new float[n];
+    pr1_scale_ = new float[s1];
+    if (cfg_.quant == QuantMode::Int8) {
+        pr1_ = new int8_t[(size_t)n * s1];
+    } else {
+        pr1_f_ = new float[(size_t)n * s1];
+    }
+    if (s2 > 0) {
+        e2_ = new float[n];
+        pr2_scale_ = new float[s2];
+        if (cfg_.quant == QuantMode::Int8) {
+            pr2_ = new int8_t[(size_t)n * s2];
+        } else {
+            pr2_f_ = new float[(size_t)n * s2];
+        }
+    }
 
     // 3. Calibrate the int8 per-axis scales on a sample.
     int sn = std::min(n, 100000);
     std::vector<float> ck((size_t)sn * D);
-    std::vector<float> ma(s1, 0);
+    std::vector<float> ma1(s1, 0), ma2(s2 > 0 ? s2 : 0);
     for (int i = 0; i < sn; i++) {
-        float norm;
-        load_raw_norm(base_ + (size_t)i * D, ck.data() + (size_t)i * D, D, norm);
-        vn_[i] = norm;
+        float raw_norm;
+        load_raw(base_ + (size_t)i * D, ck.data() + (size_t)i * D, D, normalize);
+        vn_[i] = raw_norm;
+        vn_eff_[i] = normalize ? 1.0f : raw_norm;
     }
-    for (int i = 0; i < sn; i++)
+    for (int i = 0; i < sn; i++) {
+        float* v = ck.data() + (size_t)i * D;
         for (int j = 0; j < s1; j++) {
-            float s = dot_f32(ck.data() + (size_t)i * D, P1_ + (size_t)j * D, D);
-            if (std::fabs(s) > ma[j]) ma[j] = std::fabs(s);
+            float s = dot_f32(v, P1_ + (size_t)j * D, D);
+            if (std::fabs(s) > ma1[j]) ma1[j] = std::fabs(s);
         }
+        if (s2 > 0) for (int j = 0; j < s2; j++) {
+            float s = dot_f32(v, P2_ + (size_t)j * D, D);
+            if (std::fabs(s) > ma2[j]) ma2[j] = std::fabs(s);
+        }
+    }
     for (int j = 0; j < s1; j++)
-        pr1_scale_[j] = std::max(ma[j] / 127.0f * 1.05f, 1e-10f);
+        pr1_scale_[j] = std::max(ma1[j] / 127.0f * 1.05f, 1e-10f);
+    if (s2 > 0) for (int j = 0; j < s2; j++)
+        pr2_scale_[j] = std::max(ma2[j] / 127.0f * 1.05f, 1e-10f);
 
-    // 4. Streaming pass: compute int8 projections + the REAL float32 residual.
+    // 4. Streaming pass: compute projections + residuals.
     const int CHUNK = 500000;
     std::vector<float> ch((size_t)CHUNK * D);
     int p = 0;
     while (p < n) {
         int nt = std::min(CHUNK, n - p);
         for (int i = 0; i < nt; i++) {
-            float norm;
-            load_raw_norm(base_ + (size_t)(p + i) * D, ch.data() + (size_t)i * D, D, norm);
-            vn_[p + i] = norm;
+            float raw_norm;
+            load_raw(base_ + (size_t)(p + i) * D, ch.data() + (size_t)i * D, D, normalize);
+            vn_[p + i] = raw_norm;
+            vn_eff_[p + i] = normalize ? 1.0f : raw_norm;
         }
 #pragma omp parallel for
         for (int i = 0; i < nt; i++) {
             int id = p + i;
             float* v = ch.data() + (size_t)i * D;
-            float pj[64];
-            float pn = 0;
-            for (int j = 0; j < s1; j++) { pj[j] = dot_f32(v, P1_ + (size_t)j * D, D); pn += pj[j] * pj[j]; }
-            quantize(pj, pr1_ + (size_t)id * s1, pr1_scale_, s1);
+            // Stage-1
+            float pj1[256];
+            float pn1 = 0;
+            for (int j = 0; j < s1; j++) { pj1[j] = dot_f32(v, P1_ + (size_t)j * D, D); pn1 += pj1[j] * pj1[j]; }
+            if (cfg_.quant == QuantMode::None) {
+                for (int j = 0; j < s1; j++) pr1_f_[(size_t)id * s1 + j] = pj1[j];
+            } else {
+                quantize(pj1, pr1_ + (size_t)id * s1, pr1_scale_, s1);
+            }
             // Cauchy-Schwarz residual over the REAL float32 projection:
             // e(v) = sqrt(||v||² − ||Pv||²). This is what the inequality requires.
-            e1_[id] = std::sqrt(std::max(0.0f, vn_[id] * vn_[id] - pn));
+            float vn2 = vn_eff_[id] * vn_eff_[id];
+            e1_[id] = std::sqrt(std::max(0.0f, vn2 - pn1));
+            // Stage-2
+            if (s2 > 0) {
+                float pj2[256];
+                float pn2 = 0;
+                for (int j = 0; j < s2; j++) { pj2[j] = dot_f32(v, P2_ + (size_t)j * D, D); pn2 += pj2[j] * pj2[j]; }
+                if (cfg_.quant == QuantMode::None) {
+                    for (int j = 0; j < s2; j++) pr2_f_[(size_t)id * s2 + j] = pj2[j];
+                } else {
+                    quantize(pj2, pr2_ + (size_t)id * s2, pr2_scale_, s2);
+                }
+                e2_[id] = std::sqrt(std::max(0.0f, vn2 - pn2));
+            }
         }
         p += nt;
     }
@@ -239,65 +322,189 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
     build_s_ = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - t0).count();
 }
 
-float MadhavaL2::l2_sq(int idx, const float* q) const {
-    return winnex_madhava::l2_sq(base_ + (size_t)idx * cfg_.dim, q, cfg_.dim);
+// Cauchy-Schwarz upper bound of ⟨v,q⟩ for a vector at a given layer.
+// Uses either the int8-quantized projection (with quant margin) or the
+// float32 projection exactly.
+float MadhavaL2::ub_raw(int idx, int layer, const float* pq, float qr, float qm) const {
+    int s = (layer == 1) ? cfg_.stage1_dim : cfg_.stage2_dim;
+    if (cfg_.quant == QuantMode::Int8) {
+        const int8_t* pr = (layer == 1) ? pr1_ + (size_t)idx * s : pr2_ + (size_t)idx * s;
+        const float* scale = (layer == 1) ? pr1_scale_ : pr2_scale_;
+        float inner = 0;
+        for (int j = 0; j < s; j++) inner += (float)pr[j] * scale[j] * pq[j];
+        float e = (layer == 1) ? e1_[idx] : e2_[idx];
+        return inner + e * qr + qm + 1e-5f;
+    } else {
+        const float* prf = (layer == 1) ? pr1_f_ + (size_t)idx * s : pr2_f_ + (size_t)idx * s;
+        float inner = 0;
+        for (int j = 0; j < s; j++) inner += prf[j] * pq[j];
+        float e = (layer == 1) ? e1_[idx] : e2_[idx];
+        return inner + e * qr;
+    }
 }
 
-float MadhavaL2::lb_l2(int idx, const float* pq, float qr1, float qm1, float qn2) const {
-    int s1 = cfg_.stage1_dim;
-    // Cauchy-Schwarz upper bound of ⟨v,q⟩ using the int8-quantized projection
-    // plus the quantization margin (qm) and the residual product (e·qr).
-    float inner = 0;
-    const int8_t* pr = pr1_ + (size_t)idx * s1;
-    for (int j = 0; j < s1; j++) inner += (float)pr[j] * pr1_scale_[j] * pq[j];
-    float ub = inner + e1_[idx] * qr1 + qm1 + 1e-5f;
-    // L2² = ‖v‖² + ‖q‖² − 2⟨v,q⟩ ≥ ‖v‖² + ‖q‖² − 2·ub
-    return vn_[idx] * vn_[idx] + qn2 - 2.0f * ub;
+// Exact metric score between a raw vector and a float query.
+float MadhavaL2::exact_score(int idx, const float* q) const {
+    if (cfg_.metric == Metric::L2) {
+        return l2_sq(base_ + (size_t)idx * cfg_.dim, q, cfg_.dim);
+    } else {
+        // Cosine on raw uint8 vs a (possibly un-normalized) float query.
+        float dot = 0, vn2 = 0, qn2 = 0;
+        for (int j = 0; j < cfg_.dim; j++) {
+            float v = (float)base_[(size_t)idx * cfg_.dim + j];
+            dot += v * q[j];
+            vn2 += v * v;
+        }
+        for (int j = 0; j < cfg_.dim; j++) qn2 += q[j] * q[j];
+        float denom = std::sqrt(vn2 * qn2);
+        return denom > 1e-10f ? dot / denom : 0.0f;
+    }
 }
 
 SearchResult MadhavaL2::search(const float* query, const std::vector<float>& query_norm) const {
     SearchResult out;
     if (!built_) return out;
-    int N = n_, D = cfg_.dim, s1 = cfg_.stage1_dim, K = cfg_.k;
+    int N = n_, D = cfg_.dim, s1 = cfg_.stage1_dim, s2 = cfg_.stage2_dim, K = cfg_.k;
+    bool is_l2 = (cfg_.metric == Metric::L2);
+    bool normalize = (cfg_.metric == Metric::Cosine) && cfg_.normalize_input;
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    // Query projections + residuals.
+    // Query norm (effective for the chosen metric).
     float qn = query_norm.empty() ? std::sqrt(dot_f32(query, query, D)) : query_norm[0];
-    float pq[64];
+    float qn_eff = normalize ? 1.0f : qn;
+
+    // For cosine + normalize_input, the vectors were unit-normalized at build;
+    // the query must be normalized the same way so projections match.
+    std::vector<float> qbuf;
+    const float* qproj = query;
+    if (normalize && qn > 1e-10f) {
+        qbuf.resize((size_t)D);
+        float inv = 1.0f / qn;
+        for (int j = 0; j < D; j++) qbuf[j] = query[j] * inv;
+        qproj = qbuf.data();
+    }
+
+    // Query projections + residuals.
+    float pq1[256];
     float q1s = 0;
-    for (int j = 0; j < s1; j++) { pq[j] = dot_f32(query, P1_ + (size_t)j * D, D); q1s += pq[j] * pq[j]; }
-    float qr1 = std::sqrt(std::max(0.0f, qn * qn - q1s));
+    for (int j = 0; j < s1; j++) { pq1[j] = dot_f32(qproj, P1_ + (size_t)j * D, D); q1s += pq1[j] * pq1[j]; }
+    float qr1 = std::sqrt(std::max(0.0f, qn_eff * qn_eff - q1s));
     float qm1 = 0;
-    for (int j = 0; j < s1; j++) qm1 += 0.5f * pr1_scale_[j] * std::fabs(pq[j]);
-    float qn2 = qn * qn;
+    if (cfg_.quant == QuantMode::Int8)
+        for (int j = 0; j < s1; j++) qm1 += 0.5f * pr1_scale_[j] * std::fabs(pq1[j]);
+    float qn2 = qn_eff * qn_eff;
 
     // Stage-1: bound pruning over all N.
     out.bound_pairs = N;
     std::vector<std::pair<float, int>> b1((size_t)N);
 #pragma omp parallel for
     for (int i = 0; i < N; i++) {
-        b1[i] = {lb_l2(i, pq, qr1, qm1, qn2), i};
+        float ub = ub_raw(i, 1, pq1, qr1, qm1);
+        // Score for sorting:
+        //   L2:    lb = ‖v‖² + ‖q‖² − 2·ub   (ascending = best)
+        //   Cosine: ub (descending = best) — sort ascending on −ub
+        float score = is_l2 ? (vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub) : -ub;
+        b1[i] = {score, i};
     }
     int k1 = std::max(cfg_.k1_min, (int)(N * cfg_.k1_fraction));
     if (k1 > N) k1 = N;
     if (k1 < N) std::nth_element(b1.begin(), b1.begin() + k1, b1.end());
     out.k1 = k1;
 
-    // Stage-3: post-filter with exact L2 on the survivors (if enabled),
-    // else return the top-K by the bound.
-    if (cfg_.postfilter) {
-        std::vector<std::pair<float, int>> exact((size_t)k1);
+    // Stage-2 (optional): tighter bound on the k1 survivors.
+    int k2 = k1;
+    const std::vector<std::pair<float, int>>* survivors = &b1;
+    std::vector<std::pair<float, int>> b2;
+    if (s2 > 0) {
+        float pq2[256];
+        float q2s = 0;
+        for (int j = 0; j < s2; j++) { pq2[j] = dot_f32(qproj, P2_ + (size_t)j * D, D); q2s += pq2[j] * pq2[j]; }
+        float qr2 = std::sqrt(std::max(0.0f, qn_eff * qn_eff - q2s));
+        float qm2 = 0;
+        if (cfg_.quant == QuantMode::Int8)
+            for (int j = 0; j < s2; j++) qm2 += 0.5f * pr2_scale_[j] * std::fabs(pq2[j]);
+
+        b2.resize((size_t)k1);
 #pragma omp parallel for
         for (int i = 0; i < k1; i++) {
             int vi = b1[i].second;
-            exact[i] = {l2_sq(vi, query), vi};
+            float ub2 = ub_raw(vi, 2, pq2, qr2, qm2);
+            float score2 = is_l2 ? (vn_eff_[vi] * vn_eff_[vi] + qn2 - 2.0f * ub2) : -ub2;
+            b2[i] = {score2, vi};
         }
-        out.k3 = k1;
-        std::partial_sort(exact.begin(), exact.begin() + std::min(K, k1), exact.end());
-        for (int i = 0; i < std::min(K, k1); i++) out.indices.push_back(exact[i].second);
+        int k2t = std::max(cfg_.k2_min, (int)(N * cfg_.k2_fraction));
+        if (k2t > k1) k2t = k1;
+        std::nth_element(b2.begin(), b2.begin() + k2t, b2.end());
+        k2 = k2t;
+        survivors = &b2;
+    }
+    out.k2 = k2;
+
+    // Rank the survivors:
+    //   - If modulation is on, rank by modulated = B1 + α(B2−B1)
+    //   - Else rank by the (already computed) bound score.
+    std::vector<std::pair<float, int>> ranked(k2);
+    double mod_gain = 0.0;
+    if (cfg_.modulation && s2 > 0) {
+        // Recompute B1/B2 for the k2 survivors to build the modulated score.
+        float pq1m[256], pq2m[256];
+        for (int j = 0; j < s1; j++) pq1m[j] = pq1[j];
+        if (s2 > 0) for (int j = 0; j < s2; j++) pq2m[j] = 0.0f; // recompute below
+        // (pq2 already available in this scope? recompute to be safe)
+        float q1sm = 0, q2sm = 0;
+        for (int j = 0; j < s1; j++) q1sm += pq1m[j] * pq1m[j];
+        for (int j = 0; j < s2; j++) { float v = dot_f32(qproj, P2_ + (size_t)j * D, D); pq2m[j] = v; q2sm += v * v; }
+        float qr1m = std::sqrt(std::max(0.0f, qn_eff * qn_eff - q1sm));
+        float qr2m = std::sqrt(std::max(0.0f, qn_eff * qn_eff - q2sm));
+        float qm1m = 0, qm2m = 0;
+        if (cfg_.quant == QuantMode::Int8) {
+            for (int j = 0; j < s1; j++) qm1m += 0.5f * pr1_scale_[j] * std::fabs(pq1m[j]);
+            for (int j = 0; j < s2; j++) qm2m += 0.5f * pr2_scale_[j] * std::fabs(pq2m[j]);
+        }
+        // mean(e1) over all docs for the sigmoid (stack uses mean over corpus)
+        double e1_sum = 0;
+        for (int i = 0; i < N; i++) e1_sum += e1_[i];
+        float mu = (float)(e1_sum / std::max(N, 1));
+
+#pragma omp parallel for reduction(+:mod_gain)
+        for (int i = 0; i < k2; i++) {
+            int vi = survivors->at(i).second;
+            float B1 = ub_raw(vi, 1, pq1m, qr1m, qm1m);
+            float B2 = ub_raw(vi, 2, pq2m, qr2m, qm2m);
+            float delta_e = (e1_[vi] - e2_[vi]) / std::max(mu, 1e-9f);
+            float alpha = 1.0f / (1.0f + std::exp(-delta_e * 0.5f));
+            float modulated = B1 + alpha * (B2 - B1);
+            // Convert to a sortable score.
+            float score = is_l2 ? (vn_eff_[vi] * vn_eff_[vi] + qn2 - 2.0f * modulated) : -modulated;
+            ranked[i] = {score, vi};
+            mod_gain += std::fabs(score - survivors->at(i).first);
+        }
+        mod_gain /= std::max(k2, 1);
     } else {
-        std::partial_sort(b1.begin(), b1.begin() + std::min(K, k1), b1.end());
-        for (int i = 0; i < std::min(K, k1); i++) out.indices.push_back(b1[i].second);
+        for (int i = 0; i < k2; i++) ranked[i] = survivors->at(i);
+    }
+    out.modulation_gain = mod_gain;
+
+    // Final: post-filter with exact metric on the survivors, else top-K by score.
+    if (cfg_.postfilter) {
+        std::vector<std::pair<float, int>> exact(k2);
+#pragma omp parallel for
+        for (int i = 0; i < k2; i++) {
+            int vi = ranked[i].second;
+            exact[i] = {exact_score(vi, query), vi};
+        }
+        out.k3 = k2;
+        // Sort: L2 ascending, cosine descending.
+        if (is_l2)
+            std::partial_sort(exact.begin(), exact.begin() + std::min(K, k2), exact.end());
+        else {
+            std::partial_sort(exact.begin(), exact.begin() + std::min(K, k2), exact.end(),
+                              [](auto& a, auto& b) { return a.first > b.first; });
+        }
+        for (int i = 0; i < std::min(K, k2); i++) out.indices.push_back(exact[i].second);
+    } else {
+        std::partial_sort(ranked.begin(), ranked.begin() + std::min(K, k2), ranked.end());
+        for (int i = 0; i < std::min(K, k2); i++) out.indices.push_back(ranked[i].second);
     }
 
     out.latency_ms = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - t0).count();
@@ -318,16 +525,21 @@ SearchResult MadhavaL2::search_exact(const float* query, const std::vector<float
     SearchResult out;
     if (!built_) return out;
     int N = n_, K = cfg_.k;
+    bool is_l2 = (cfg_.metric == Metric::L2);
     auto t0 = std::chrono::high_resolution_clock::now();
 
     std::vector<std::pair<float, int>> scores((size_t)N);
 #pragma omp parallel for
     for (int i = 0; i < N; i++) {
-        scores[i] = {l2_sq(i, query), i};
+        scores[i] = {exact_score(i, query), i};
     }
     out.bound_pairs = N;
     out.k3 = N;
-    std::partial_sort(scores.begin(), scores.begin() + std::min(K, N), scores.end());
+    if (is_l2)
+        std::partial_sort(scores.begin(), scores.begin() + std::min(K, N), scores.end());
+    else
+        std::partial_sort(scores.begin(), scores.begin() + std::min(K, N), scores.end(),
+                          [](auto& a, auto& b) { return a.first > b.first; });
     for (int i = 0; i < std::min(K, N); i++) out.indices.push_back(scores[i].second);
     out.latency_ms = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - t0).count();
     return out;

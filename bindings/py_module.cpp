@@ -1,11 +1,13 @@
 /**
- * py_module.cpp — Python bindings for the Madhava L2 library (pybind11).
+ * py_module.cpp — Python bindings for the Winnex Madhava engine (pybind11).
  * Exposes the engine, the exact-scan ceiling baseline, and the metrics.
  *
  *   import winnex_madhava
- *   eng = winnex_madhava.MadhavaL2(dim=128, stage1_dim=64, k=10, postfilter=True)
- *   eng.build(raw_bytes)          # raw_bytes: bytes/bytearray of n*dim uint8
- *   res = eng.search(query_float32)  # returns SearchResult
+ *   eng = winnex_madhava.MadhavaL2(dim=384, stage1_dim=64, stage2_dim=128,
+ *                                  metric='cosine', quant='int8', k=10,
+ *                                  modulation=True, postfilter=True)
+ *   eng.build(raw_bytes)              # raw_bytes: bytes/bytearray of n*dim uint8
+ *   res = eng.search(query_float32)   # returns SearchResult
  *   res_exact = eng.search_exact(query_float32)
  */
 #include "winnex_madhava/winnex_madhava.hpp"
@@ -18,26 +20,47 @@ namespace py = pybind11;
 using namespace winnex_madhava;
 
 PYBIND11_MODULE(_winnex_madhava, m) {
-    m.doc() = "Madhava L2 — deterministic vector search with Cauchy-Schwarz bounds";
+    m.doc() = "Winnex Madhava — deterministic vector search with Cauchy-Schwarz bounds";
+
+    // Metric enum
+    py::enum_<Metric>(m, "Metric")
+        .value("COSINE", Metric::Cosine)
+        .value("L2", Metric::L2)
+        .export_values();
+
+    // QuantMode enum
+    py::enum_<QuantMode>(m, "QuantMode")
+        .value("INT8", QuantMode::Int8)
+        .value("NONE", QuantMode::None)
+        .export_values();
 
     py::class_<Config>(m, "Config")
         .def(py::init<>())
         .def_readwrite("dim", &Config::dim)
-        .def_readwrite("stage1_dim", &Config::stage1_dim)
         .def_readwrite("seed", &Config::seed)
+        .def_readwrite("metric", &Config::metric)
+        .def_readwrite("quant", &Config::quant)
+        .def_readwrite("stage1_dim", &Config::stage1_dim)
+        .def_readwrite("stage2_dim", &Config::stage2_dim)
         .def_readwrite("k", &Config::k)
         .def_readwrite("k1_fraction", &Config::k1_fraction)
+        .def_readwrite("k2_fraction", &Config::k2_fraction)
         .def_readwrite("k1_min", &Config::k1_min)
+        .def_readwrite("k2_min", &Config::k2_min)
+        .def_readwrite("modulation", &Config::modulation)
         .def_readwrite("postfilter", &Config::postfilter)
+        .def_readwrite("normalize_input", &Config::normalize_input)
         .def_readwrite("n_threads", &Config::n_threads);
 
     py::class_<SearchResult>(m, "SearchResult")
         .def_readonly("indices", &SearchResult::indices)
         .def_readonly("k1", &SearchResult::k1)
+        .def_readonly("k2", &SearchResult::k2)
         .def_readonly("k3", &SearchResult::k3)
         .def_readonly("latency_ms", &SearchResult::latency_ms)
         .def_readonly("bound_pairs", &SearchResult::bound_pairs)
-        .def_readonly("bound_violations", &SearchResult::bound_violations);
+        .def_readonly("bound_violations", &SearchResult::bound_violations)
+        .def_readonly("modulation_gain", &SearchResult::modulation_gain);
 
     py::class_<MadhavaL2>(m, "MadhavaL2")
         .def(py::init<const Config&>())

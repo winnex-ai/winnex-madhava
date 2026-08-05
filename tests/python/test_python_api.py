@@ -16,6 +16,16 @@ def engine():
     return winnex_madhava.build_engine(corpus, dim=64, k=10, k1_fraction=0.10)
 
 
+@pytest.fixture()
+def l2_engine():
+    """Explicit L2 engine (BIGANN-style, uint8 raw)."""
+    rng = np.random.default_rng(42)
+    corpus = rng.integers(0, 256, size=(5000, 64), dtype=np.uint8)
+    return winnex_madhava.build_engine(corpus, dim=64, metric="l2", quant="int8",
+                                        stage1_dim=64, stage2_dim=0,
+                                        k=10, k1_fraction=0.10, postfilter=True)
+
+
 def test_build_and_search(engine):
     assert engine.num_vectors() == 5000
     assert engine.dim() == 64
@@ -28,7 +38,7 @@ def test_build_and_search(engine):
     assert res.latency_ms >= 0
 
 
-def test_self_is_top1(engine):
+def test_self_is_top1_l2(l2_engine):
     # A vector equal to the query must be found at rank 0 by exact L2.
     # We use the first corpus vector as the query.
     corpus = np.zeros((1, 64), dtype=np.uint8)
@@ -38,17 +48,19 @@ def test_self_is_top1(engine):
 
     cfg = winnex_madhava.Config()
     cfg.dim = 64
+    cfg.metric = winnex_madhava.Metric.L2
     e2 = winnex_madhava.MadhavaL2(cfg)
     e2.build_numpy(corpus)
     res = e2.search(q)
     assert res.indices[0] == 0
 
 
-def test_exact_scan_matches_brute_force(engine):
+def test_exact_scan_matches_brute_force_l2():
     rng = np.random.default_rng(42)
     corpus = rng.integers(0, 256, size=(5000, 64), dtype=np.uint8)
     cfg = winnex_madhava.Config()
     cfg.dim = 64
+    cfg.metric = winnex_madhava.Metric.L2
     e2 = winnex_madhava.MadhavaL2(cfg)
     e2.build_numpy(corpus)
 
@@ -58,6 +70,40 @@ def test_exact_scan_matches_brute_force(engine):
     d2 = ((corpus.astype(np.float32) - q) ** 2).sum(axis=1)
     top = np.argsort(d2)[:10]
     assert list(res.indices) == list(top)
+
+
+def test_cosine_cascade_self_is_top1():
+    """Cosine metric + cascade [32,64] + modulation: the query vector must be
+    its own top-1 (unit-normalized embeddings, stack behavior)."""
+    rng = np.random.default_rng(7)
+    centers = rng.normal(0, 1, size=(8, 64))
+    centers /= np.linalg.norm(centers, axis=1, keepdims=True)
+    n = 3000
+    labels = rng.integers(0, 8, size=n)
+    X = centers[labels] + 0.2 * rng.normal(0, 1, size=(n, 64))
+    X /= np.linalg.norm(X, axis=1, keepdims=True)
+    Xu8 = np.clip((X * 127 + 128), 0, 255).astype(np.uint8)
+
+    eng = winnex_madhava.build_engine(Xu8, dim=64, metric="cosine", quant="int8",
+                                       stage1_dim=32, stage2_dim=64, k=5,
+                                       k1_fraction=0.2, modulation=True, postfilter=True)
+    q = Xu8[0].astype(np.float32)
+    res = eng.search(q)
+    assert res.bound_violations == 0
+    assert res.indices[0] == 0  # self is top-1
+
+
+def test_quant_none_matches_exact():
+    """quant='none' (float32 projections) must be exact-equivalent to scan."""
+    rng = np.random.default_rng(11)
+    X = rng.integers(0, 256, size=(3000, 64), dtype=np.uint8)
+    eng = winnex_madhava.build_engine(X, dim=64, metric="l2", quant="none",
+                                       stage1_dim=32, stage2_dim=0, k=5, postfilter=True)
+    q = X[0].astype(np.float32)
+    res = eng.search(q)
+    exact = eng.search_exact(q)
+    assert res.bound_violations == 0
+    assert res.indices[0] == exact.indices[0] == 0
 
 
 def test_metrics():

@@ -1,27 +1,28 @@
 /**
- * winnex_madhava.hpp — Public API of the Madhava L2 C++ Library
- * ==========================================================
+ * winnex_madhava.hpp — Public API of the Winnex Madhava Engine
+ * =============================================================
  * Deterministic vector search with Cauchy-Schwarz upper bounds,
- * evaluated against the official BIGANN-100M L2 ground truth.
+ * parametrizable across the Winnex stack:
  *
- * This library packages the Madhava L2 engine as a reusable C++20
- * library with:
- *   - Cauchy-Schwarz bound Stage-1 pruning (0 bound violations)
- *   - Optional post-filter with exact L2 in the surviving top-k1
- *   - Exact-scan baseline (the recall "ceiling" of a subset)
- *   - Binary Recall@K / NDCG@K against a ground-truth id list
+ *   - Metric:      'cosine' (stack default, normalized embeddings) or 'l2'
+ *   - Cascade:     two-stage QR projection [stage1_dim, stage2_dim]
+ *                  (stack: [64,128] — bound B1 wide, B2 tight)
+ *   - Quantization: 'int8' (fast, memory-light) or 'none' (float32 exact)
+ *   - Modulation:  error-backpropagation ranking (stack FIX(1)):
+ *                  prune by the TIGHT bound (B2), rank by modulated score.
+ *   - Post-filter:  exact metric re-score on the surviving top-k1/k2
+ *   - Navigation:   optional PiPrime/HMC (v7) — placeholder hook
  *
  * Mathematical guarantee (Cauchy-Schwarz on raw inner product):
  *   ⟨v,q⟩ ≤ ⟨Pv,Pq⟩ + ‖v−PᵀPv‖ · ‖q−PᵀPq‖
- * hence for L2²:
- *   ‖v−q‖² = ‖v‖² + ‖q‖² − 2⟨v,q⟩ ≥ ‖v‖² + ‖q‖² − 2·(UB of ⟨v,q⟩)
- * Every vector pruned by Stage 1 is mathematically proven not to be
- * in the top-K by the L2 distance.
+ *
+ * Every vector pruned by Stage 1/2 carries a proof it could not be in the
+ * exact top-K by the chosen metric. Bound violations = 0 by construction.
  *
  * BSL 1.1 | pay@winnex.ai | (c) Winnex Brasil Soluções Empresariais LTDA-ME
  */
-#ifndef MADHAVA_L2_HPP
-#define MADHAVA_L2_HPP
+#ifndef WINNEX_MADHAVA_HPP
+#define WINNEX_MADHAVA_HPP
 
 #include <cstdint>
 #include <cstddef>
@@ -32,29 +33,65 @@
 namespace winnex_madhava {
 
 // ---------------------------------------------------------------------------
+// Metric enum
+// ---------------------------------------------------------------------------
+enum class Metric {
+    Cosine = 0,   // normalized embeddings (stack default: v17, Madhava-Sec, HMC v7)
+    L2     = 1    // raw uint8 L2 (BIGANN-style)
+};
+
+// ---------------------------------------------------------------------------
+// Quantization enum
+// ---------------------------------------------------------------------------
+enum class QuantMode {
+    Int8 = 0,   // int8-quantized projections (fast, memory-light)
+    None = 1    // float32 exact projections (max fidelity)
+};
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 struct Config {
-    int dim = 128;          // vector dimensionality (uint8 raw bytes)
-    int stage1_dim = 64;    // Stage-1 QR projection dimensionality
-    int seed = 42;          // PRNG seed for the MGS projection
-    int k = 10;             // number of results to return
+    // Data
+    int dim = 128;            // vector dimensionality (uint8 raw bytes)
+    int seed = 42;            // PRNG seed for the MGS projections
+
+    // Metric & quantization (stack parametrizable)
+    Metric metric = Metric::Cosine;   // stack default: cosine over normalized embeddings
+    QuantMode quant = QuantMode::Int8;
+
+    // Cascade (two-stage bound, stack [64,128])
+    int stage1_dim = 64;      // Stage-1 QR projection (wide bound B1)
+    int stage2_dim = 128;     // Stage-2 QR projection (tight bound B2); 0 = single-stage
+
+    // Search
+    int k = 10;               // number of results to return
     double k1_fraction = 0.05; // Stage-1 keep fraction (top-k1 = N*k1_fraction)
-    int k1_min = 100;       // minimum k1 (guards tiny N)
-    bool postfilter = true; // apply exact-L2 post-filter on the top-k1
-    int n_threads = 0;      // 0 = use omp_get_max_threads()
+    double k2_fraction = 0.01; // Stage-2 keep fraction (top-k2 = N*k2_fraction) if stage2_dim>0
+    int k1_min = 100;         // minimum k1 (guards tiny N)
+    int k2_min = 10;          // minimum k2
+
+    // Ranking & refinement
+    bool modulation = true;   // error-backprop ranking: prune by B2, rank by B1+α(B2−B1)
+    bool postfilter = true;   // exact metric re-score on the surviving set
+    bool normalize_input = true; // for Metric::Cosine: L2-normalize each vector on load
+
+    // Parallelism
+    int n_threads = 0;        // 0 = use omp_get_max_threads()
 };
 
 // ---------------------------------------------------------------------------
 // Search result
 // ---------------------------------------------------------------------------
 struct SearchResult {
-    std::vector<int> indices;   // top-K indices, ascending L2²
+    std::vector<int> indices;   // top-K indices, by chosen metric
     int k1 = 0;                 // survivors after Stage-1 pruning
-    int k3 = 0;                 // candidates actually evaluated exactly
+    int k2 = 0;                 // survivors after Stage-2 pruning (if any)
+    int k3 = 0;                 // candidates actually scored exactly
     double latency_ms = 0.0;    // search wall time (excludes build)
     long long bound_pairs = 0;  // N vectors evaluated in Stage-1
     long long bound_violations = 0; // should always be 0
+    double modulation_gain = 0.0;   // mean |rank_by_modulated − rank_by_bound|
 };
 
 // ---------------------------------------------------------------------------
@@ -72,7 +109,7 @@ double recall_at_k(const std::vector<int>& result, const std::vector<int>& gt_se
 double ndcg_at_k(const std::vector<int>& result, const std::vector<int>& gt_set, int k);
 
 // ---------------------------------------------------------------------------
-// Madhava L2 Engine
+// Winnex Madhava Engine
 // ---------------------------------------------------------------------------
 // Immutable view over a raw uint8 corpus. The caller owns the data pointer;
 // the engine never copies the corpus (mmap-friendly).
@@ -87,18 +124,18 @@ public:
     MadhavaL2(MadhavaL2&&) = delete;
     MadhavaL2& operator=(MadhavaL2&&) = delete;
 
-    // Build the Stage-1 projections + per-vector residuals.
+    // Build the Stage-1 (+ Stage-2) projections + per-vector residuals.
     // raw_base must point to at least n*dim uint8 bytes, kept alive during use.
     void build(const uint8_t* raw_base, int n);
 
-    // Search: Stage-1 bound pruning (top-k1) + optional exact-L2 post-filter.
+    // Search: bound pruning (top-k1/k2) + optional post-filter.
     SearchResult search(const float* query, const std::vector<float>& query_norm) const;
     SearchResult search(const float* query) const; // computes norm internally
 
-    // Exact scan baseline: computes L2² for ALL n vectors (the recall ceiling).
-    // Returns the exact top-K. Use to measure the subset's achievable ceiling.
+    // Exact scan baseline: computes the chosen metric for ALL n vectors.
+    // Returns the exact top-K (the recall ceiling of the subset).
     SearchResult search_exact(const float* query, const std::vector<float>& query_norm) const;
-    SearchResult search_exact(const float* query) const; // computes norm internally
+    SearchResult search_exact(const float* query) const;
 
     // Diagnostics
     int num_vectors() const { return n_; }
@@ -108,10 +145,10 @@ public:
     bool built() const { return built_; }
 
 private:
-    // Per-vector L2² (raw uint8 vs float query)
-    float l2_sq(int idx, const float* q) const;
-    // Cauchy-Schwarz lower bound of L2² for a vector (Stage-1 score)
-    float lb_l2(int idx, const float* pq, float qr1, float qm1, float qn2) const;
+    // Cauchy-Schwarz upper bound of ⟨v,q⟩ for a vector (Stage-1/2 score).
+    float ub_raw(int idx, int layer, const float* pq, float qr, float qm) const;
+    // Exact metric score between a raw vector and a float query.
+    float exact_score(int idx, const float* q) const;
 
     Config cfg_;
     const uint8_t* base_ = nullptr;
@@ -119,12 +156,21 @@ private:
     bool built_ = false;
     double build_s_ = 0.0;
 
-    // Stage-1 projection (QR-orthogonalized via Modified Gram-Schmidt)
+    // Stage-1/2 projections (QR-orthogonalized via Modified Gram-Schmidt)
     float* P1_ = nullptr;       // [stage1_dim × dim]
+    float* P2_ = nullptr;       // [stage2_dim × dim] (nullptr if single-stage)
+
+    // Stage-1/2 cached projections + residuals
     int8_t* pr1_ = nullptr;     // [n × stage1_dim] int8 quantized projections
+    int8_t* pr2_ = nullptr;     // [n × stage2_dim] (nullptr if single-stage)
+    float* pr1_f_ = nullptr;    // [n × stage1_dim] float32 (used when quant=Int8 OR None)
+    float* pr2_f_ = nullptr;    // [n × stage2_dim] float32
     float* pr1_scale_ = nullptr; // [stage1_dim] per-axis quant scale
-    float* e1_ = nullptr;       // [n] residual ||v−PᵀPv|| (float32 REAL, not int8)
+    float* pr2_scale_ = nullptr; // [stage2_dim]
+    float* e1_ = nullptr;       // [n] residual ||v−PᵀPv|| (Stage-1, float32 REAL)
+    float* e2_ = nullptr;       // [n] residual (Stage-2)
     float* vn_ = nullptr;       // [n] L2 norms of the raw vectors
+    float* vn_eff_ = nullptr;   // [n] effective norm used by the metric (1.0 if cosine-normalized)
 };
 
 // ---------------------------------------------------------------------------
@@ -140,4 +186,4 @@ float l2_sq(const uint8_t* v_raw, const float* q, int dim);
 
 } // namespace winnex_madhava
 
-#endif // MADHAVA_L2_HPP
+#endif // WINNEX_MADHAVA_HPP
