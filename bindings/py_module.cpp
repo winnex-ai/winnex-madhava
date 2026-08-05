@@ -47,9 +47,11 @@ PYBIND11_MODULE(_winnex_madhava, m) {
         .def_readwrite("k2_fraction", &Config::k2_fraction)
         .def_readwrite("k1_min", &Config::k1_min)
         .def_readwrite("k2_min", &Config::k2_min)
+        .def_readwrite("k2_max", &Config::k2_max)
         .def_readwrite("modulation", &Config::modulation)
         .def_readwrite("postfilter", &Config::postfilter)
         .def_readwrite("normalize_input", &Config::normalize_input)
+        .def_readwrite("early_exit", &Config::early_exit)
         .def_readwrite("n_threads", &Config::n_threads);
 
     py::class_<SearchResult>(m, "SearchResult")

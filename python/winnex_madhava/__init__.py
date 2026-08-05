@@ -80,7 +80,7 @@ recall_at_k = _native.recall_at_k
 ndcg_at_k = _native.ndcg_at_k
 read_bigann_groundtruth = _native.read_bigann_groundtruth
 
-__version__ = "1.1.4"
+__version__ = "1.2.0"
 __all__ = [
     "Config",
     "SearchResult",
@@ -107,9 +107,11 @@ def build_engine(
     k: int = 10,
     k1_fraction: float = 0.05,
     k2_fraction: float = 0.01,
+    k2_max: int = 2000,
     modulation: bool = True,
     postfilter: bool = True,
     normalize_input: bool = True,
+    early_exit: bool = True,
     seed: int = 42,
 ) -> MadhavaL2:
     """Build a Winnex Madhava engine over a uint8 corpus.
@@ -137,12 +139,18 @@ def build_engine(
         Stage-1 keep fraction.
     k2_fraction : float, default 0.01
         Stage-2 keep fraction (only if stage2_dim > 0).
+    k2_max : int, default 2000
+        Cap on Stage-2 survivors. At 100M this limits the post-filter cost
+        (streaming: k2 = min(N*k2_fraction, k2_max)).
     modulation : bool, default True
         Error-backprop ranking: prune by tight bound B2, rank by B1+α(B2−B1).
     postfilter : bool, default True
         Exact-metric re-score on the surviving candidates.
     normalize_input : bool, default True
         L2-normalize each vector at build (used when metric='cosine').
+    early_exit : bool, default True
+        Stop exact scoring once the bound cannot beat the current top-K
+        (the bigann_stream optimization; important at 100M).
     seed : int, default 42
         PRNG seed for the MGS projections.
     """
@@ -163,6 +171,8 @@ def build_engine(
     cfg.modulation = bool(modulation)
     cfg.postfilter = bool(postfilter)
     cfg.normalize_input = bool(normalize_input)
+    cfg.early_exit = bool(early_exit)
+    cfg.k2_max = int(k2_max)
     cfg.seed = int(seed)
     engine = MadhavaL2(cfg)
     n = engine.build_numpy(arr)

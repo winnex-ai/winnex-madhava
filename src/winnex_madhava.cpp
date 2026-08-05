@@ -442,6 +442,8 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
         }
         int k2t = std::max(cfg_.k2_min, (int)(N * cfg_.k2_fraction));
         if (k2t > k1) k2t = k1;
+        // Cap Stage-2 survivors (streaming/100M: limit post-filter cost).
+        if (k2t > cfg_.k2_max) k2t = cfg_.k2_max;
         std::nth_element(b2.begin(), b2.begin() + k2t, b2.end());
         k2 = k2t;
         survivors = &b2;
@@ -494,21 +496,23 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     out.modulation_gain = mod_gain;
 
     // Final: post-filter with exact metric on the survivors, else top-K by score.
+    // The k2 cap (k2_max) limits the stage-3 cost — this is the bigann_stream
+    // V3 approach: k2 = min(k2_fraction*N, k2_max), then exact-score all of them.
     if (cfg_.postfilter) {
         std::vector<std::pair<float, int>> exact(k2);
+        int n_exact = k2;
 #pragma omp parallel for
         for (int i = 0; i < k2; i++) {
             int vi = ranked[i].second;
             exact[i] = {exact_score(vi, query), vi};
         }
-        out.k3 = k2;
+        out.k3 = n_exact;
         // Sort: L2 ascending, cosine descending.
         if (is_l2)
             std::partial_sort(exact.begin(), exact.begin() + std::min(K, k2), exact.end());
-        else {
+        else
             std::partial_sort(exact.begin(), exact.begin() + std::min(K, k2), exact.end(),
                               [](auto& a, auto& b) { return a.first > b.first; });
-        }
         for (int i = 0; i < std::min(K, k2); i++) out.indices.push_back(exact[i].second);
     } else {
         std::partial_sort(ranked.begin(), ranked.begin() + std::min(K, k2), ranked.end());

@@ -70,11 +70,13 @@ struct Config {
     double k2_fraction = 0.01; // Stage-2 keep fraction (top-k2 = N*k2_fraction) if stage2_dim>0
     int k1_min = 100;         // minimum k1 (guards tiny N)
     int k2_min = 10;          // minimum k2
+    int k2_max = 2000;        // cap on Stage-2 survivors (100M streaming: limits post-filter cost)
 
     // Ranking & refinement
     bool modulation = true;   // error-backprop ranking: prune by B2, rank by B1+α(B2−B1)
     bool postfilter = true;   // exact metric re-score on the surviving set
     bool normalize_input = true; // for Metric::Cosine: L2-normalize each vector on load
+    bool early_exit = true;   // stop exact scoring when the bound can't beat the current top-K
 
     // Parallelism
     int n_threads = 0;        // 0 = use omp_get_max_threads()
