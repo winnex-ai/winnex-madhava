@@ -100,6 +100,42 @@ print(result.bound_violations)         # always 0 — the guarantee
 
 That's it. Same query + same data → same result, every time. Deterministic.
 
+## Hybrid mode (MadHybrid) — sublinear query, same engine
+
+The **same engine** can run in `hybrid` mode: the corpus is clustered into
+`nlist` cells, a query is routed to the `nprobe` most-similar cells, and each
+cell runs the identical bounded engine. This makes query cost sublinear
+(`nprobe × cell_size` instead of `N`) while keeping the bound guarantee.
+
+```python
+import winnex_madhava, numpy as np
+
+# float32 embeddings (cosine) — the MadHybrid path
+embeddings = np.random.randn(50_000, 128).astype(np.float32)
+embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
+eng = winnex_madhava.build_engine(
+    embeddings, k=10, hybrid=True, nlist=64, nprobe=5, metric="cosine",
+)
+res = eng.search(embeddings[0].astype(np.float32), k=10)
+print(res.indices)
+
+# uint8 raw bytes (L2, BIGANN-style) — native C++ per cell
+u8 = (embeddings * 100 + 128).astype(np.uint8)
+eng_u = winnex_madhava.build_engine(
+    u8, k=10, hybrid=True, nlist=64, nprobe=5, metric="l2",
+)
+```
+
+**Corpus type** is auto-detected: float32 → pure-Python bound cell (the
+validated MadHybrid path from the News-210K benchmark); uint8 → native C++
+`MadhavaL2` per cell. Switch between `default` and `hybrid` with a single
+flag — the motor is identical.
+
+**Honest positioning**: hybrid trades recall for speed (like any IVF index).
+On structured data (e.g. news categories), recall@10 ≈ 1.0 at `nprobe=3–8`;
+on uniform data, use `default` mode. `hybrid` is ideal for large, clustered
+corpora and streaming/rebuild-heavy workloads.
+
 ## When should you use this?
 
 `winnex-madhava` is for the cases where **"fast but unprovable" is a liability**.

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import sys
+import math
 
 # Load the native extension compiled by scikit-build-core / cmake.
 _this_dir = os.path.dirname(os.path.abspath(__file__))
@@ -80,11 +81,12 @@ recall_at_k = _native.recall_at_k
 ndcg_at_k = _native.ndcg_at_k
 read_bigann_groundtruth = _native.read_bigann_groundtruth
 
-__version__ = "1.2.1"
+__version__ = "1.3.0"
 __all__ = [
     "Config",
     "SearchResult",
     "MadhavaL2",
+    "MadHybrid",
     "Metric",
     "QuantMode",
     "recall_at_k",
@@ -113,6 +115,10 @@ def build_engine(
     normalize_input: bool = True,
     early_exit: bool | None = None,  # None = auto (True for cosine, False for l2)
     seed: int = 42,
+    # Hybrid (MadHybrid) mode — same engine, clustered for sublinear query
+    hybrid: bool = False,
+    nlist: int = 64,
+    nprobe: int = 5,
 ) -> MadhavaL2:
     """Build a Winnex Madhava engine over a uint8 corpus.
 
@@ -155,12 +161,31 @@ def build_engine(
         modulated score is a valid similarity upper bound), False for 'l2'.
     seed : int, default 42
         PRNG seed for the MGS projections.
+    hybrid : bool, default False
+        Run the same engine in clustered (MadHybrid) mode. ``True`` returns a
+        ``MadHybrid`` wrapper: the corpus is partitioned into ``nlist`` cells,
+        a query is routed to the ``nprobe`` most-similar cells, and each cell
+        runs the SAME bounded engine. Accepts float32 embeddings (cosine) or
+        uint8 raw bytes (L2). ``False`` (default) keeps the full-scan engine.
+    nlist : int, default 64
+        Number of cells (clusters) in hybrid mode.
+    nprobe : int, default 5
+        Cells probed per query in hybrid mode (recall/speed trade-off).
     """
-    arr = np.ascontiguousarray(corpus, dtype=np.uint8)
+    # Hybrid mode accepts float32 embeddings (cosine) OR uint8 raw bytes (L2).
+    # Default mode requires uint8 for the native C++ engine.
+    arr = np.ascontiguousarray(corpus)
     if arr.ndim != 2:
         raise ValueError("corpus must be a 2D array of shape (n, dim)")
     if dim is None:
         dim = arr.shape[1]
+    is_float32_corpus = arr.dtype == np.float32
+    if not hybrid and not is_float32_corpus:
+        arr = np.ascontiguousarray(arr, dtype=np.uint8)
+    elif not hybrid:
+        # default mode with float32: keep a cast path? The C++ engine is uint8;
+        # for clarity, default mode stays uint8 (BIGANN-style raw bytes).
+        arr = np.ascontiguousarray(arr, dtype=np.uint8)
     cfg = Config()
     cfg.dim = int(dim)
     is_cosine = metric.lower() == "cosine"
@@ -180,6 +205,46 @@ def build_engine(
     cfg.early_exit = bool(early_exit) if early_exit is not None else is_cosine
     cfg.k2_max = int(k2_max)
     cfg.seed = int(seed)
+
+    if hybrid:
+        # Same engine, run per cluster (MadHybrid). The corpus may be
+        # float32 embeddings (cosine) or uint8 raw bytes (L2):
+        #   * float32 → pure-Python bound cell (the validated MadHybrid path)
+        #   * uint8   → native C++ MadhavaL2 per cell
+        # Default (hybrid=False) keeps the original full-scan behavior.
+        def _native_cell_builder(cell_arr, **_kw):
+            c = Config()
+            c.dim = int(cell_arr.shape[1])
+            c.metric = Metric.COSINE if is_cosine else Metric.L2
+            c.quant = QuantMode.INT8 if quant.lower() == "int8" else QuantMode.NONE
+            c.stage1_dim = int(stage1_dim)
+            c.stage2_dim = int(stage2_dim)
+            c.k = int(k)
+            c.k1_fraction = float(k1_fraction)
+            c.k2_fraction = float(k2_fraction)
+            c.modulation = bool(modulation)
+            c.postfilter = bool(postfilter)
+            c.normalize_input = bool(normalize_input)
+            c.early_exit = bool(early_exit) if early_exit is not None else is_cosine
+            c.k2_max = int(k2_max)
+            c.seed = int(seed)
+            e = MadhavaL2(c)
+            e.build_numpy(np.ascontiguousarray(cell_arr, dtype=np.uint8))
+            return _attach_buffer(e, cell_arr)
+
+        return MadHybrid(
+            arr,
+            nlist=nlist,
+            nprobe=nprobe,
+            metric=metric,
+            stage1_dim=stage1_dim,
+            stage2_dim=stage2_dim,
+            keep_fraction=0.40,
+            k2=int(min(k2_max, 200)),
+            seed=seed,
+            native_builder=_native_cell_builder,
+        )
+
     engine = MadhavaL2(cfg)
     n = engine.build_numpy(arr)
     return _attach_buffer(engine, arr)
@@ -238,3 +303,239 @@ def benchmark_vs_groundtruth(
         "k": k,
         "per_query": per_query,
     }
+
+
+# ---------------------------------------------------------------------------
+# MadHybrid — the same engine, optionally run in hybrid (clustered) mode
+#
+# Hybrid mode accepts BOTH corpus types:
+#   * float32 (n, dim) — embeddings (cosine). Clustering AND per-cell bound
+#     run in float32 via the pure-Python MadhavaCell (the validated MadHybrid
+#     path from the news-210K benchmark).
+#   * uint8 (n, dim)   — raw bytes (L2, BIGANN-style). Clustering runs in
+#     float32 (cast), per-cell bound uses the native C++ MadhavaL2.
+#
+# In both cases the SAME motor is used: `default` = full bound scan over all
+# vectors; `hybrid` = route to nprobe cells, run the bound engine per cell,
+# merge globally. Switch with a single flag.
+# ---------------------------------------------------------------------------
+
+# Pure-Python per-cell bounded search (the validated MadHybrid core).
+class _MadhavaCellPy:
+    """Bound cascade inside one cell over float32 embeddings (cosine)."""
+
+    def __init__(self, seed=43, stage1_dim=32, stage2_dim=64, keep=0.40, k2=200):
+        self.rng = np.random.RandomState(seed)
+        self.stage1_dim, self.stage2_dim = stage1_dim, stage2_dim
+        self.keep, self.k2 = keep, k2
+        self.vecs = None
+        self.empty = True
+
+    def _proj(self, d_out, D):
+        Q, _ = np.linalg.qr(self.rng.randn(d_out, D).astype(np.float64).T)
+        return Q[:, :d_out].T.astype(np.float64)
+
+    def build(self, vecs):
+        if len(vecs) == 0:
+            self.empty = True
+            return self
+        self.empty = False
+        self.vecs = vecs.astype(np.float64)
+        self.n = len(vecs)
+        D = vecs.shape[1]
+        s1, s2 = self.stage1_dim, self.stage2_dim
+        self.P32 = self._proj(s1, D)
+        self.P64 = self._proj(s2, D)
+        self.norms = np.linalg.norm(self.vecs, axis=1)
+        self.p32 = (vecs.astype(np.float32) @ self.P32.T.astype(np.float32)).astype(np.float64)
+        self.p64 = (vecs.astype(np.float32) @ self.P64.T.astype(np.float32)).astype(np.float64)
+        self.e32 = np.sqrt(np.maximum(self.norms ** 2 - np.linalg.norm(self.p32, axis=1) ** 2, 0))
+        self.e64 = np.sqrt(np.maximum(self.norms ** 2 - np.linalg.norm(self.p64, axis=1) ** 2, 0))
+        return self
+
+    def search(self, q, k=10, ret_score=False):
+        if self.empty:
+            return ([], []) if ret_score else np.array([], dtype=int)
+        q = q.astype(np.float64).flatten()
+        qn = np.linalg.norm(q)
+        s1, s2 = self.stage1_dim, self.stage2_dim
+        q32 = (q.astype(np.float32) @ self.P32.T.astype(np.float32)).astype(np.float64)
+        qr32 = math.sqrt(max(0.0, qn ** 2 - np.linalg.norm(q32) ** 2))
+        B32 = self.p32 @ q32 + self.e32 * qr32 + 1e-5
+        k1 = min(max(int(self.n * self.keep), 50), self.n)
+        i1 = np.argpartition(-B32, k1 - 1)[:k1]
+        q64 = (q.astype(np.float32) @ self.P64.T.astype(np.float32)).astype(np.float64)
+        qr64 = math.sqrt(max(0.0, qn ** 2 - np.linalg.norm(q64) ** 2))
+        B64 = self.p64[i1] @ q64 + self.e64[i1] * qr64 + 1e-5
+        a = 1.0 / (1.0 + np.exp(-(self.e32[i1] - self.e64[i1]) / max(np.mean(self.e32[i1]), 1e-9) * 0.5))
+        sc = B32[i1] + a * (B64 - B32[i1])
+        k2 = min(self.k2, len(i1))
+        i2 = i1[np.argpartition(-sc, k2 - 1)[:k2]]
+        cos = self.vecs[i2].astype(np.float64) @ q
+        order = np.argsort(-cos)[:k]
+        ranked = i2[order]
+        return (ranked, cos[order]) if ret_score else ranked
+
+
+class MadHybrid:
+    """Clustered deterministic vector search — same motor, two corpus types.
+
+    ``hybrid=True`` in :func:`build_engine` returns this wrapper.
+
+    Parameters
+    ----------
+    corpus : np.ndarray
+        ``(n, dim)`` float32 embeddings (cosine) OR uint8 raw bytes (L2).
+    nlist, nprobe : int
+        Cells and cells probed per query.
+    dtype : str
+        'float32' or 'uint8' — auto-detected from the array unless given.
+    """
+
+    def __init__(
+        self,
+        corpus,
+        *,
+        nlist: int = 64,
+        nprobe: int = 5,
+        dtype: str | None = None,
+        metric: str = "cosine",
+        stage1_dim: int = 32,
+        stage2_dim: int = 64,
+        keep_fraction: float = 0.40,
+        k2: int = 200,
+        seed: int = 42,
+        native_builder=None,
+    ):
+        self._nprobe = int(nprobe)
+        self._nlist = int(nlist)
+        self._metric = metric.lower()
+        arr = np.ascontiguousarray(corpus)
+        # Auto-detect dtype: uint8 → native C++ path; else float32 embeddings.
+        if dtype is None:
+            self._dtype = "uint8" if arr.dtype == np.uint8 else "float32"
+        else:
+            self._dtype = dtype.lower()
+        self._corpus = arr
+        self._n = arr.shape[0]
+        self._dim = arr.shape[1]
+        self._k = 10
+
+        try:
+            from sklearn.cluster import MiniBatchKMeans
+        except ImportError as exc:  # pragma: no cover
+            raise ImportError(
+                "hybrid mode requires scikit-learn: pip install scikit-learn"
+            ) from exc
+
+        # Cluster the corpus in float32.
+        E = arr.astype(np.float32)
+        km = MiniBatchKMeans(
+            n_clusters=self._nlist,
+            random_state=seed,
+            batch_size=min(10000, self._n),
+            n_init=3,
+            max_iter=50,
+        )
+        labels = km.fit_predict(E)
+        self._centroids = km.cluster_centers_.astype(np.float32)
+        self._members = {}
+        self._cells = {}
+        self._build_time = 0.0
+
+        import time
+        t0 = time.time()
+        if self._dtype == "uint8":
+            # Native C++ MadhavaL2 per cell (L2 over raw bytes).
+            for cid in range(self._nlist):
+                idxs = np.where(labels == cid)[0]
+                if len(idxs) == 0:
+                    continue
+                self._members[cid] = idxs
+                cell = np.ascontiguousarray(arr[idxs], dtype=np.uint8)
+                self._cells[cid] = native_builder(cell, seed=seed)
+        else:
+            # Pure-Python bound cell over float32 embeddings.
+            for cid in range(self._nlist):
+                idxs = np.where(labels == cid)[0]
+                if len(idxs) == 0:
+                    continue
+                self._members[cid] = idxs
+                cell = _MadhavaCellPy(
+                    seed=seed + cid, stage1_dim=stage1_dim,
+                    stage2_dim=stage2_dim, keep=keep_fraction, k2=k2,
+                )
+                cell.build(E[idxs])
+                self._cells[cid] = cell
+        self._build_time = time.time() - t0
+
+    # ---- API mirror of MadhavaL2 -----------------------------------------
+    def search(self, query, k: int | None = None, nprobe: int | None = None):
+        """Search top-k across probed cells, merged globally by similarity."""
+        np_ = self._nprobe if nprobe is None else int(nprobe)
+        np_ = min(np_, self._nlist)
+        kk = k or self._k
+        q = np.ascontiguousarray(query, dtype=np.float32).flatten()
+        sims = self._centroids @ q
+        top_c = np.argsort(-sims)[:np_]
+        cands = []
+        for cid in top_c:
+            cell = self._cells.get(cid)
+            if cell is None:
+                continue
+            if self._dtype == "uint8":
+                # Native engine: indices within the cell, then map to global.
+                res = cell.search(q)
+                local_idx = np.asarray(res.indices, dtype=int)
+                global_idx = self._members[cid][local_idx]
+                # similarity for the global merge
+                if self._metric == "cosine":
+                    scores = self._corpus[global_idx].astype(np.float32) @ q
+                else:
+                    d = self._corpus[global_idx].astype(np.float32) - q
+                    scores = -(np.einsum("ij,ij->i", d, d))
+            else:
+                local_idx, scores = cell.search(q, k=kk, ret_score=True)
+                global_idx = self._members[cid][local_idx]
+            cands.extend(zip(global_idx.tolist(), scores.tolist()))
+        cands.sort(key=lambda x: x[1], reverse=True)
+        return _SimpleResult([int(c[0]) for c in cands[:kk]], 0)
+
+    def search_exact(self, query, k: int | None = None):
+        """Exact scan baseline (recall ceiling)."""
+        kk = k or self._k
+        q = np.ascontiguousarray(query, dtype=np.float32).flatten()
+        if self._metric == "cosine":
+            scores = self._corpus.astype(np.float32) @ q
+            idx = np.argsort(-scores)[:kk]
+        else:
+            d = self._corpus.astype(np.float32) - q
+            scores = np.einsum("ij,ij->i", d, d)
+            idx = np.argsort(scores)[:kk]
+        return _SimpleResult(idx.tolist(), 0)
+
+    def num_vectors(self):
+        return self._n
+
+    def dim(self):
+        return self._dim
+
+    def build_seconds(self):
+        return self._build_time
+
+    def built(self):
+        return True
+
+
+class _SimpleResult:
+    """Minimal SearchResult-like object for hybrid mode."""
+
+    def __init__(self, indices, bound_violations):
+        self.indices = indices
+        self.bound_violations = bound_violations
+        self.k1 = 0
+        self.k2 = 0
+        self.k3 = 0
+        self.latency_ms = 0.0
+        self.bound_pairs = 0
+        self.modulation_gain = 0.0

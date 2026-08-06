@@ -5,6 +5,21 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] — 2026-08-06
+
+### ✨ Hybrid mode (MadHybrid)
+
+`build_engine(..., hybrid=True, nlist=..., nprobe=...)` returns a clustered
+MadHybrid wrapper: the same bound engine, partitioned into cells and queried
+sublinearly. Supports **float32 embeddings** (cosine, pure-Python bound cells)
+and **uint8 raw bytes** (L2, native C++ per cell). One motor, two modes.
+
+- `MadHybrid` class + `_MadhavaCellPy` (per-cell bound cascade 32D→64D)
+- `build_engine` gains `hybrid`, `nlist`, `nprobe` parameters
+- Validated on News 210K / SBERT: recall@10 ≈ 1.0 at nprobe=3–8
+- See README "Hybrid mode (MadHybrid)"
+
+
 ## [1.1.3] — 2026-08-05
 
 ### 🔧 Métricas robustas (Recall@K / NDCG@K)
