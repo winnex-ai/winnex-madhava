@@ -5,6 +5,15 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] — 2026-08-07
+
+### 📝 README: hybrid benchmark results
+
+- Document the News-210K MadHybrid benchmark table (real Kaggle results)
+- Document hybrid/nlist/nprobe parameters + float32-vs-uint8 input contract
+- Link the hybrid-vs-HNSW/IVF/IVF-PQ Kaggle notebook
+
+
 ## [1.3.0] — 2026-08-06
 
 ### ✨ Hybrid mode (MadHybrid)
