@@ -113,18 +113,14 @@ PYBIND11_MODULE(_winnex_madhava, m) {
 
     // SpeedEngine — native speed mode (QKᵀ matmul: CUDA if available, else CPU)
     py::class_<SpeedEngine>(m, "SpeedEngine")
-        .def(py::init([](py::array_t<float, py::array::c_style> arr, int dim, int metric) {
+        .def(py::init([](py::array_t<float, py::array::c_style> arr, int dim, int metric,
+                         int n_anchors, int nprobe) {
                  auto info = arr.request();
                  return new SpeedEngine((const float*)info.ptr, (int)info.shape[0], dim,
-                                        (Metric)metric);
+                                        (Metric)metric, n_anchors, nprobe);
              }),
-             py::arg("corpus_f32"), py::arg("dim"), py::arg("metric"))
-        .def("build_numpy_u8",
-             [](SpeedEngine& self, py::array_t<uint8_t, py::array::c_style> arr, int dim, int metric) {
-                 auto info = arr.request();
-                 return new SpeedEngine((const uint8_t*)info.ptr, (int)info.shape[0], dim,
-                                        (Metric)metric);
-             })
+             py::arg("corpus_f32"), py::arg("dim"), py::arg("metric"),
+             py::arg("n_anchors") = 0, py::arg("nprobe") = 4)
         .def("search",
              [](const SpeedEngine& self, py::array_t<float, py::array::c_style> q, int k) {
                  auto info = q.request();

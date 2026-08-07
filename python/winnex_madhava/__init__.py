@@ -81,7 +81,7 @@ recall_at_k = _native.recall_at_k
 ndcg_at_k = _native.ndcg_at_k
 read_bigann_groundtruth = _native.read_bigann_groundtruth
 
-__version__ = "1.5.0"
+__version__ = "1.6.0"
 __all__ = [
     "Config",
     "SearchResult",
@@ -123,6 +123,11 @@ def build_engine(
     # Speed (GPU) mode — direct HNSW competitor via QKᵀ matmul (attention)
     speed: bool = False,
     gpu_dtype: str = "float32",
+    # O(K) anchor navigation within speed mode (PiPrime anchors + SO(4)):
+    # n_anchors>=2 routes queries to the nprobe most-similar anchor cells
+    # (sublinear); 0 = brute-force exact scan.
+    speed_n_anchors: int = 0,
+    speed_nprobe: int = 4,
 ) -> MadhavaL2:
     """Build a Winnex Madhava engine over a uint8 corpus.
 
@@ -253,11 +258,15 @@ def build_engine(
     if speed:
         # Speed (GPU) mode — the attention QKᵀ matmul as an exact scan.
         # Accepts float32 embeddings (cosine) or uint8 raw bytes (L2).
+        # With speed_n_anchors>=2, uses O(K) PiPrime anchor navigation
+        # (sublinear: only the nprobe most-similar anchor cells are scanned).
         return MadhavaSpeed(
             arr,
             k=int(k),
             metric=metric,
             dtype=gpu_dtype,
+            n_anchors=int(speed_n_anchors),
+            nprobe=int(speed_nprobe),
         )
 
     engine = MadhavaL2(cfg)
@@ -582,7 +591,8 @@ class MadhavaSpeed:
     for larger corpora at a small risk of near-tie reordering.
     """
 
-    def __init__(self, corpus, *, k=10, metric="cosine", dtype="float32"):
+    def __init__(self, corpus, *, k=10, metric="cosine", dtype="float32",
+                 n_anchors=0, nprobe=4):
         self._k = int(k)
         self._metric = metric.lower()
         arr = np.ascontiguousarray(corpus)
@@ -594,6 +604,8 @@ class MadhavaSpeed:
         # Prefer the NATIVE C++ SpeedEngine (cuBLAS QKᵀ when CUDA is present,
         # OpenMP/AVX2 CPU otherwise). Fall back to torch only if the native
         # engine is unavailable in this build.
+        # n_anchors: K PiPrime anchors for O(K) sublinear navigation (>=2).
+        # n_anchors=0 → brute-force exact scan.
         self._native = None
         if hasattr(_native, "SpeedEngine"):
             try:
@@ -603,6 +615,7 @@ class MadhavaSpeed:
                 self._native = _native.SpeedEngine(
                     np.ascontiguousarray(f32), self._dim,
                     1 if self._metric == "l2" else 0,
+                    int(n_anchors), int(nprobe),
                 )
             except Exception:
                 self._native = None

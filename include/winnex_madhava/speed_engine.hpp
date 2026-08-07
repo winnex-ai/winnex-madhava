@@ -43,8 +43,15 @@ class SpeedEngine {
 public:
     // corpus: (n, dim) float32 (normalized for cosine) or uint8 (for L2).
     // The engine copies the corpus to its own storage.
-    SpeedEngine(const float* corpus, int n, int dim, Metric metric);
-    SpeedEngine(const uint8_t* corpus, int n, int dim, Metric metric);
+    // n_anchors: K PiPrime anchors (SVD+Gram-Schmidt) for O(K) navigation.
+    //   When n_anchors >= 2, the search is sublinear: the query is routed to
+    //   the nprobe most-similar anchor cells, and QKᵀ runs only over the
+    //   members of those cells. When n_anchors < 2, it falls back to the full
+    //   exact scan (brute force).
+    SpeedEngine(const float* corpus, int n, int dim, Metric metric,
+                int n_anchors = 0, int nprobe = 4);
+    SpeedEngine(const uint8_t* corpus, int n, int dim, Metric metric,
+                int n_anchors = 0, int nprobe = 4);
     ~SpeedEngine();
 
     SpeedEngine(const SpeedEngine&) = delete;
@@ -83,6 +90,15 @@ private:
     bool is_cosine_;
     bool use_gpu_ = false;
 
+    // O(K) anchor navigation: K PiPrime anchors + per-vector cell assignment.
+    int n_anchors_ = 0;
+    int nprobe_ = 4;
+    bool use_anchors_ = false;
+    std::vector<float> anchors_;        // [K * dim] orthonormal anchors
+    std::vector<int> cell_of_;          // [N] anchor index per vector
+    std::vector<std::vector<int>> cells_; // cells_[k] = vector ids in anchor cell k
+    std::vector<float> cell_radius_;    // [K] max ||v - a_k|| in cell k
+
     // CPU storage: normalized float32 corpus + per-vector norms (for L2).
     std::vector<float> corpus_f32_;
     std::vector<float> norms_;   // ||v|| (cosine normalized to 1.0; else raw)
@@ -90,6 +106,9 @@ private:
     // GPU state (only allocated when has_gpu()).
     float* corpus_gpu_ = nullptr;
     float* norms_gpu_ = nullptr;
+
+    // Build the PiPrime anchors (SVD + Gram-Schmidt) + Voronoi assignment.
+    void build_anchors();
 };
 
 } // namespace winnex_madhava
