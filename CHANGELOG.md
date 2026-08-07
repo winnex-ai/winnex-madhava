@@ -5,6 +5,18 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-08-07
+
+### 🚀 Speed mode (GPU) — direct HNSW competitor
+
+- `build_engine(..., speed=True)` returns a `MadhavaSpeed` GPU engine
+- Uses the exact attention `Q Kᵀ` matmul as a batched exact scan
+- float32 embeddings (cosine) or uint8 raw bytes (L2) with correct L2 score
+- `search` (individual) and `search_batch` (throughput) with CUDA warmup
+- optional-dependency: `pip install winnex-madhava[speed]` (torch)
+- 5 correctness tests (vs brute-force), skipped without CUDA
+
+
 ## [1.3.1] — 2026-08-07
 
 ### 📝 README: hybrid benchmark results
