@@ -11,6 +11,7 @@
  *   res_exact = eng.search_exact(query_float32)
  */
 #include "winnex_madhava/winnex_madhava.hpp"
+#include "winnex_madhava/speed_engine.hpp"
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -109,6 +110,46 @@ PYBIND11_MODULE(_winnex_madhava, m) {
         .def("config", &MadhavaL2::config)
         .def("build_seconds", &MadhavaL2::build_seconds)
         .def("built", &MadhavaL2::built);
+
+    // SpeedEngine — native speed mode (QKᵀ matmul: CUDA if available, else CPU)
+    py::class_<SpeedEngine>(m, "SpeedEngine")
+        .def(py::init([](py::array_t<float, py::array::c_style> arr, int dim, int metric) {
+                 auto info = arr.request();
+                 return new SpeedEngine((const float*)info.ptr, (int)info.shape[0], dim,
+                                        (Metric)metric);
+             }),
+             py::arg("corpus_f32"), py::arg("dim"), py::arg("metric"))
+        .def("build_numpy_u8",
+             [](SpeedEngine& self, py::array_t<uint8_t, py::array::c_style> arr, int dim, int metric) {
+                 auto info = arr.request();
+                 return new SpeedEngine((const uint8_t*)info.ptr, (int)info.shape[0], dim,
+                                        (Metric)metric);
+             })
+        .def("search",
+             [](const SpeedEngine& self, py::array_t<float, py::array::c_style> q, int k) {
+                 auto info = q.request();
+                 auto r = self.search((const float*)info.ptr, k);
+                 py::dict d;
+                 d["indices"] = r.indices;
+                 d["latency_ms"] = r.latency_ms;
+                 d["bound_pairs"] = r.bound_pairs;
+                 d["bound_violations"] = r.bound_violations;
+                 return d;
+             },
+             py::arg("query"), py::arg("k"))
+        .def("search_batch",
+             [](const SpeedEngine& self, py::array_t<float, py::array::c_style> q, int nq, int k) {
+                 auto info = q.request();
+                 auto r = self.search_batch((const float*)info.ptr, nq, k);
+                 py::dict d;
+                 d["indices"] = r.indices;
+                 d["latency_ms"] = r.latency_ms;
+                 return d;
+             },
+             py::arg("queries"), py::arg("nq"), py::arg("k"))
+        .def("num_vectors", &SpeedEngine::num_vectors)
+        .def("dim", &SpeedEngine::dim)
+        .def("has_gpu", &SpeedEngine::has_gpu);
 
     m.def("recall_at_k", &recall_at_k, py::arg("result"), py::arg("gt_set"), py::arg("k"));
     m.def("ndcg_at_k", &ndcg_at_k, py::arg("result"), py::arg("gt_set"), py::arg("k"));

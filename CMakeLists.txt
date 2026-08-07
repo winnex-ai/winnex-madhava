@@ -1,6 +1,14 @@
 cmake_minimum_required(VERSION 3.20)
 project(winnex_madhava VERSION 1.0.1 LANGUAGES CXX)
 
+# Optional CUDA for the native speed mode (cuBLAS QKᵀ matmul).
+# Without a CUDA toolkit the CPU speed backend is used (OpenMP/AVX2).
+include(CheckLanguage)
+check_language(CUDA)
+if(CMAKE_CUDA_COMPILER)
+    enable_language(CUDA)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -30,19 +38,30 @@ find_package(OpenMP REQUIRED)
 find_package(Python3 COMPONENTS Interpreter Development)
 
 # --- Main static library -----------------------------------------------
-add_library(winnex_madhava
-    src/winnex_madhava.cpp
-)
+set(MADHAVA_CORE_SRC src/winnex_madhava.cpp src/speed_cpu.cpp)
+if(CMAKE_CUDA_COMPILER)
+    list(APPEND MADHAVA_CORE_SRC src/speed_gpu.cu)
+    add_compile_definitions(MADHAVA_HAS_CUDA)
+endif()
+
+add_library(winnex_madhava ${MADHAVA_CORE_SRC})
 target_include_directories(winnex_madhava PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 target_link_libraries(winnex_madhava PUBLIC OpenMP::OpenMP_CXX)
+if(CMAKE_CUDA_COMPILER)
+    find_package(CUDAToolkit REQUIRED)
+    target_link_libraries(winnex_madhava PUBLIC CUDA::cublas CUDA::cudart)
+endif()
 
 # --- Shared library (for pybind11) --------------------------------------
-add_library(winnex_madhava_shared SHARED src/winnex_madhava.cpp)
+add_library(winnex_madhava_shared SHARED ${MADHAVA_CORE_SRC})
 set_target_properties(winnex_madhava_shared PROPERTIES OUTPUT_NAME winnex_madhava)
 target_include_directories(winnex_madhava_shared PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(winnex_madhava_shared PUBLIC OpenMP::OpenMP_CXX)
+if(CMAKE_CUDA_COMPILER)
+    target_link_libraries(winnex_madhava_shared PUBLIC CUDA::cublas CUDA::cudart)
+endif()
 
 # Install
 install(TARGETS winnex_madhava winnex_madhava_shared DESTINATION lib)

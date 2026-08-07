@@ -81,7 +81,7 @@ recall_at_k = _native.recall_at_k
 ndcg_at_k = _native.ndcg_at_k
 read_bigann_groundtruth = _native.read_bigann_groundtruth
 
-__version__ = "1.4.1"
+__version__ = "1.5.0"
 __all__ = [
     "Config",
     "SearchResult",
@@ -583,48 +583,55 @@ class MadhavaSpeed:
     """
 
     def __init__(self, corpus, *, k=10, metric="cosine", dtype="float32"):
-        try:
-            import torch
-        except ImportError as exc:  # pragma: no cover
-            raise ImportError(
-                "speed mode requires torch: pip install winnex-madhava[speed]"
-            ) from exc
-        if not torch.cuda.is_available():  # pragma: no cover
-            raise RuntimeError(
-                "speed mode requires a CUDA GPU (torch.cuda.is_available() == False). "
-                "Use default or hybrid mode on CPU."
-            )
-        self._torch = torch
-        self._dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
         self._k = int(k)
         self._metric = metric.lower()
         arr = np.ascontiguousarray(corpus)
-        self._corpus_np = arr
         self._n = arr.shape[0]
         self._dim = arr.shape[1]
         import time
         t0 = time.time()
-        if self._metric == "cosine":
+
+        # Prefer the NATIVE C++ SpeedEngine (cuBLAS QKᵀ when CUDA is present,
+        # OpenMP/AVX2 CPU otherwise). Fall back to torch only if the native
+        # engine is unavailable in this build.
+        self._native = None
+        if hasattr(_native, "SpeedEngine"):
+            try:
+                # The native engine takes float32; the C++ core normalizes for
+                # cosine and precomputes ||v||² for L2 internally.
+                f32 = arr.astype(np.float32)
+                self._native = _native.SpeedEngine(
+                    np.ascontiguousarray(f32), self._dim,
+                    1 if self._metric == "l2" else 0,
+                )
+            except Exception:
+                self._native = None
+
+        if self._native is None:
+            # Fallback: torch GPU path (original implementation).
+            try:
+                import torch
+            except ImportError as exc:  # pragma: no cover
+                raise ImportError(
+                    "speed mode requires either the native engine or torch"
+                ) from exc
+            if not torch.cuda.is_available():  # pragma: no cover
+                raise RuntimeError(
+                    "speed mode native engine unavailable and no CUDA GPU "
+                    "(torch.cuda.is_available() == False)."
+                )
+            self._torch = torch
+            self._dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
             f = arr.astype(np.float32)
-            norms = np.linalg.norm(f, axis=1, keepdims=True)
-            f = f / np.maximum(norms, 1e-12)
-        else:
-            f = arr.astype(np.float32)
-        self._corpus = torch.as_tensor(f, device="cuda", dtype=self._dtype)
-        # For L2, the exact score is ||v||² + ||q||² - 2·<v,q>. The ||v||² term
-        # must be precomputed; ||q||² is constant per query (does not change topk).
-        if self._metric == "l2":
-            self._corpus_norms = (self._corpus * self._corpus).sum(dim=1)
-        else:
-            self._corpus_norms = None
-        # Warm up the CUDA kernels so the first real query is not dominated by
-        # lazy compilation / kernel launch overhead.
-        try:
-            with torch.no_grad():
-                _ = self._corpus[:1] @ self._corpus.T
-                torch.cuda.synchronize()
-        except Exception:
-            pass
+            if self._metric == "cosine":
+                norms = np.linalg.norm(f, axis=1, keepdims=True)
+                f = f / np.maximum(norms, 1e-12)
+            self._corpus = torch.as_tensor(f, device="cuda", dtype=self._dtype)
+            if self._metric == "l2":
+                self._corpus_norms = (self._corpus * self._corpus).sum(dim=1)
+            else:
+                self._corpus_norms = None
+
         self._build_time = time.time() - t0
 
     # ---- API mirror of MadhavaL2 / MadHybrid -----------------------------
@@ -632,16 +639,21 @@ class MadhavaSpeed:
         """Exact top-k for one query (q @ corpus.T = the QKᵀ attention op)."""
         kk = k or self._k
         q = np.ascontiguousarray(query, dtype=np.float32).flatten()
+        if self._native is not None:
+            import time
+            t0 = time.time()
+            res = self._native.search(q, kk)
+            out = _SimpleResult(res["indices"], 0)
+            out.latency_ms = res["latency_ms"]
+            return out
+        # torch fallback
         if self._metric == "cosine":
             q = q / max(np.linalg.norm(q), 1e-12)
         qg = self._torch.as_tensor(q, device="cuda", dtype=self._dtype)
-
         import time
         t0 = time.time()
         scores = qg @ self._corpus.T          # the attention QKᵀ
         if self._metric == "l2":
-            # L2² = ||v||² + ||q||² - 2·<v,q>. ||q||² is constant per query, so
-            # ordering by -(L2²) ≡ ordering by 2·<v,q> - ||v||².
             scores = 2.0 * scores - self._corpus_norms
         topv, topi = self._torch.topk(scores, min(kk, self._n))
         self._torch.cuda.synchronize()
@@ -654,6 +666,14 @@ class MadhavaSpeed:
         """Exact top-k for a batch of queries (batched QKᵀ — the throughput mode)."""
         kk = k or self._k
         Q = np.ascontiguousarray(queries, dtype=np.float32)
+        if self._native is not None:
+            import time
+            t0 = time.time()
+            res = self._native.search_batch(Q, len(Q), kk)
+            out = _SimpleResult(res["indices"], 0)
+            out.latency_ms = res["latency_ms"]
+            return out
+        # torch fallback
         if self._metric == "cosine":
             norms = np.linalg.norm(Q, axis=1, keepdims=True)
             Q = Q / np.maximum(norms, 1e-12)
@@ -664,7 +684,6 @@ class MadhavaSpeed:
             qg = self._torch.as_tensor(Q[start : start + chunk], device="cuda", dtype=self._dtype)
             scores = qg @ self._corpus.T      # batched QKᵀ
             if self._metric == "l2":
-                # Same L2 correction as search(): order by 2·<v,q> - ||v||².
                 scores = 2.0 * scores - self._corpus_norms.unsqueeze(0)
             topv, topi = self._torch.topk(scores, min(kk, self._n))
             all_idx.append(topi.cpu().numpy())
@@ -689,3 +708,7 @@ class MadhavaSpeed:
 
     def built(self):
         return True
+
+    @property
+    def backend(self):
+        return "native" if self._native is not None else "torch"
