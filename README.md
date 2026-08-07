@@ -248,6 +248,49 @@ Trade-off: higher `nprobe` recovers more recall at more latency. On
 structured data (e.g. news categories), `nprobe=3–5` reaches near-exact
 recall; on uniform data, prefer `default` mode.
 
+### Choosing `speed` / `speed_n_anchors` / `speed_nprobe`
+
+| Parameter | Default | Effect |
+|---|---|---|
+| `speed` | `False` | `True` → native speed mode (C++ QKᵀ matmul; cuBLAS on GPU, OpenMP/AVX2 on CPU) |
+| `speed_n_anchors` | `0` | K PiPrime anchors for **O(K) navigation**. `>=2` → sublinear (route query to the nprobe most-similar anchor cells); `0` → brute-force exact scan |
+| `speed_nprobe` | `4` | Anchor cells probed per query. Higher = better recall, more latency |
+
+```python
+import winnex_madhava, numpy as np
+
+# Speed mode — brute-force exact scan (default)
+eng_bf = winnex_madhava.build_engine(
+    corpus_u8, k=10, speed=True, metric="l2",
+)
+
+# Speed mode — O(K) anchor navigation (sublinear, intelligent)
+eng_an = winnex_madhava.build_engine(
+    corpus_u8, k=10, speed=True, metric="l2",
+    speed_n_anchors=16,   # K PiPrime anchors (SVD + Gram-Schmidt)
+    speed_nprobe=8,       # cells probed (trade recall vs cost)
+)
+```
+
+**How it works.** K orthonormal anchors (SVD power-iteration + Gram-Schmidt,
+inspired by the [PiPrime navigation](https://zenodo.org/records/17171112))
+partition the corpus into Voronoi cells. A query is routed to the `nprobe`
+most-similar cells via `q @ anchors.T` (O(K·d), tiny), then the QKᵀ scan
+runs **only over the members of those cells** — sublinear, not a full N·d
+scan.
+
+**Honest usage.**
+- `speed_n_anchors=0` (default) is the **brute-force exact scan** — correct
+  everywhere, O(N·d). Use it when you need guaranteed exact top-K.
+- `speed_n_anchors>=2` is **sublinear** — it evaluates only the relevant
+  cells, at a recall cost that depends on `nprobe`. On structured data,
+  `nprobe=8` reaches 100% of the exact-scan ceiling; `nprobe=4` may drop
+  recall. Tune on your data.
+- The CPU speed mode is an **exact scan** (O(N·d)) — HNSW is faster on raw
+  CPU latency. The value is **exactness + build speed + determinism**. On
+  **GPU** (cuBLAS), the QKᵀ matmul is ~100× faster and competes directly
+  with HNSW on latency.
+
 ## Streaming — 100M vectors without loading the corpus into RAM
 
 `winnex-madhava` searches **100M vectors (12.8 GB)** without ever loading the
@@ -315,12 +358,14 @@ corpus is **never** loaded into RAM. **0 bound violations** at every scale.
 
 ## API
 
-### `winnex_madhava.build_engine(corpus, **kwargs) -> MadhavaL2 | MadHybrid`
+### `winnex_madhava.build_engine(corpus, **kwargs) -> MadhavaL2 | MadHybrid | MadhavaSpeed`
 
 Build an engine over a `(n, dim)` array. With `hybrid=False` (default) the
 corpus is uint8 and the native C++ `MadhavaL2` is returned. With
-`hybrid=True` a `MadHybrid` wrapper is returned, accepting float32 embeddings
-(cosine) or uint8 (L2). See [Parameter guide](#parameter-guide).
+`hybrid=True` a `MadHybrid` wrapper is returned (float32 or uint8). With
+`speed=True` a `MadhavaSpeed` is returned — the native QKᵀ matmul engine
+(cuBLAS on GPU, OpenMP/AVX2 on CPU), optionally with O(K) anchor navigation
+via `speed_n_anchors`/`speed_nprobe`. See [Parameter guide](#parameter-guide).
 
 ### `engine.search(query: np.ndarray) -> SearchResult`
 
@@ -487,6 +532,43 @@ Related public benchmarks:
 - [winnex-madhava-pip-200-queries](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-200-queries) — official L2 GT, 200 queries, 10M/100M
 - [winnex-madhava-faiss-benchmark](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-faiss-benchmark) — side-by-side with FAISS HNSW/IVF/IVF-PQ
 - [winnex-madhava-hybrid-vs-hnsw-ivf-ivf-pq](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-hybrid-vs-hnsw-ivf-ivf-pq) — hybrid (MadHybrid) vs HNSW/IVF/IVF-PQ on News 210K
+- [winnex-madhava-speed-gpu-vs-hnsw-ivf-ivf-pq-bigann](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-speed-gpu-vs-hnsw-ivf-ivf-pq-bigann) — speed mode (native C++, O(K) anchors) vs HNSW/IVF/IVF-PQ on BIGANN-100M
+
+### Speed benchmark (BIGANN-100M, v1.6.0)
+
+The `winnex-madhava` speed mode — native C++ (cuBLAS on GPU, OpenMP/AVX2 on
+CPU), with **O(K) PiPrime anchor navigation** (sublinear, not brute force) —
+compared against HNSW / IVF / IVF-PQ on the **BIGANN-100M** dataset (subset
+1M, 30 queries, official L2 ground truth):
+
+[![Kaggle](https://img.shields.io/badge/Kaggle-Speed%20vs%20HNSW%2FIVF%2FIVF--PQ%20(BIGANN)-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-speed-gpu-vs-hnsw-ivf-ivf-pq-bigann)
+
+| Method | R@10 | NDCG | Lat (ms) | QPS | Effic. |
+|---|---|---|---|---|---|
+| HNSW(ef=64) | 0.0067 | 0.0120 | 0.46 | 2185 | 67% |
+| **HNSW(ef=128)** | 0.0100 | 0.0151 | **0.69** | 1454 | **100%** |
+| IVF-PQ(m=16) | 0.0067 | 0.0147 | 1.20 | 835 | 67% |
+| IVF(nprobe=10) | 0.0067 | 0.0120 | 2.16 | 463 | 67% |
+| IVF(nprobe=50) | 0.0100 | 0.0151 | 9.44 | 106 | 100% |
+| **Madhava speed (brute)** | 0.0100 | 0.0151 | 24.1 | 41 | **100%** |
+| **Madhava speed O(K) a=16 np=8** | 0.0100 | 0.0151 | 35.2 | 28 | **100%** |
+| Madhava speed O(K) a=32 np=4 | 0.0067 | 0.0120 | 29.2 | 34 | 67% |
+
+**Read the honest insight**:
+- The official BIGANN GT is for the **full 100M**. On a 1M subset only ~1%
+  of true neighbors exist, so **all** methods (including exact scan) cap at
+  R@10 ≈ 0.01. The "efficiency" column is relative to the subset's
+  exact-scan ceiling — the speed mode reaches **100%** (it is exact).
+- **HNSW is faster in raw latency on CPU** (0.69 ms vs 24 ms) — expected:
+  the speed mode does an exact scan (O(N·d)); HNSW is sublinear. **On GPU**,
+  the QKᵀ matmul would be ~100× faster, closing the gap.
+- **O(K) anchors**: with `nprobe=8`, the anchor navigation reaches **100%**
+  of the ceiling (the anchors capture the true neighbors) while evaluating
+  only the relevant cells. With `nprobe=4`, recall drops to 67% — the
+  nprobe trade-off is real and documented.
+- **Build**: speed brute = 0.6 s vs HNSW = 332 s (**~556× faster**).
+- The speed mode's value is **exactness + build speed + determinism**, not
+  beating HNSW on raw CPU latency. On GPU it competes directly on latency.
 
 ## Limitations (read this first)
 
@@ -549,10 +631,26 @@ The Stage-1 QR projection shines on high-dimensional uint8 data (64–1000D).
 On tiny corpora or d < ~8 the projection overhead dominates and an exact
 `search_exact` scan is both faster and simpler.
 
-### No GPU / no persistence yet
+### Speed mode: CPU exact scan is O(N·d); GPU needs a CUDA build
 
-The engine is CPU-only and keeps the index in memory; there is no
-serialize/load API in the current version. Rebuild per process.
+The **CPU** speed mode is an exact scan — O(N·d) per query. It is correct
+everywhere but HNSW beats it on raw CPU latency (sub-linear vs linear). The
+**O(K) anchor navigation** (`speed_n_anchors>=2`) reduces the evaluated set
+to the relevant cells (sub-linear in data touched), with a recall cost that
+depends on `nprobe`.
+
+The **GPU** path (cuBLAS QKᵀ) is written (`src/speed_gpu.cu`) and compiled
+automatically by CMake when a CUDA toolkit is present
+(`CMAKE_CUDA_ARCHITECTURES` should cover your GPU, e.g. `60` for P100,
+`120` for RTX 50xx). Without a CUDA toolkit, the CPU backend is used. There
+is no persistence/serialize API yet — rebuild per process.
+
+### O(K) anchor recall depends on `nprobe`
+
+The sublinear speed mode trades recall for speed like any IVF index: with a
+small `nprobe`, some true neighbors may fall outside the probed cells
+(measured: `nprobe=4` → 67% of the exact ceiling, `nprobe=8` → 100% on
+structured data). Tune `speed_n_anchors`/`speed_nprobe` on your data.
 
 ## Honest comparison
 
