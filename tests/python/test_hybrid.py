@@ -13,6 +13,10 @@ Run:  python -m pytest tests/python/ -v
 import numpy as np
 import pytest
 
+# Hybrid mode needs scikit-learn (an optional dependency). If it is not
+# installed, skip the hybrid tests rather than failing the whole suite.
+pytest.importorskip("sklearn")
+
 import winnex_madhava
 
 

@@ -34,7 +34,7 @@ jobs:
 
       - name: Install wheel + test deps
         run: |
-          /opt/python/cp312-cp312/bin/pip install --quiet dist/*.whl pytest numpy
+          /opt/python/cp312-cp312/bin/pip install --quiet dist/*.whl pytest numpy scikit-learn
 
       - name: Run Python tests
         run: |
