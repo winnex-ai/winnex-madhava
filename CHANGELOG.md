@@ -160,4 +160,16 @@ HMC v7), tornando-se **parametrizável** com valores padrão:
 - Motor C++20 com bound Cauchy-Schwarz e post-filter L2 exato.
 - Módulo Python (pybind11) com `build_engine`, `search`, `search_exact`.
 - Benchmark contra o GT oficial BIGANN-100M (subset 10M).
-- CI (GitHub Actions) e publish via Trusted Publisher para o PyPI.
+- CI (GitHub Actions) e publish via Trusted Publisher para o PyPI.## [1.6.0] — 2026-08-07
+
+### 🧭 O(K) anchor navigation in speed mode (sublinear)
+
+- PiPrime anchors (SVD power-iteration + Gram-Schmidt) partition the corpus
+  into Voronoi cells
+- Queries route to the nprobe most-similar anchor cells (O(K·d) navigation)
+- QKᵀ runs only over the selected cells — sublinear, not brute force
+- `build_engine(speed=True, speed_n_anchors=16, speed_nprobe=4)`
+- recall 1.0 vs brute-force; 1.6× faster at 1M (CPU); scales with N
+
+
+
