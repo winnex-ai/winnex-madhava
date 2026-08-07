@@ -8,3 +8,8 @@ dist/
 __pycache__/
 .pytest_cache/
 *.pyc
+
+# local builds
+build_cpu/
+build_py/
+
