@@ -4,11 +4,13 @@
  *   1. The Cauchy-Schwarz bound never violates (0 bound violations).
  *   2. The post-filter recovers the exact-scan top-K (recall = ceiling).
  *   3. NDCG/Recall metric helpers behave correctly.
+ *   4. SpeedEngine GPU backend (OpenCL or CUDA) matches brute-force exact.
  *
  * Build & run:
  *   cmake -B build && cmake --build build && ./build/test_winnex_madhava
  */
 #include "winnex_madhava/winnex_madhava.hpp"
+#include "winnex_madhava/speed_engine.hpp"
 
 #include <cassert>
 #include <cmath>
@@ -34,6 +36,28 @@ int count_hits(const std::vector<int>& a, const std::vector<int>& b) {
     int h = 0;
     for (int x : a) for (int y : b) if (x == y) { h++; break; }
     return h;
+}
+
+// Deterministic float32 corpus + queries for the speed engine.
+std::vector<float> make_f32(int n, int dim, int seed) {
+    std::mt19937 rng(seed);
+    std::uniform_real_distribution<float> u(-1.f, 1.f);
+    std::vector<float> v((size_t)n * dim);
+    for (auto& x : v) x = u(rng);
+    return v;
+}
+
+// Exact brute-force argmax of q @ corpus.T (cosine, normalized).
+int brute_argmax(const std::vector<float>& corpus, int n, int dim,
+                 const std::vector<float>& q) {
+    float best = -1e30f;
+    int besti = -1;
+    for (int vi = 0; vi < n; vi++) {
+        float s = 0;
+        for (int j = 0; j < dim; j++) s += corpus[(size_t)vi * dim + j] * q[j];
+        if (s > best) { best = s; besti = vi; }
+    }
+    return besti;
 }
 
 } // namespace
@@ -93,6 +117,41 @@ int main() {
     // 4. Empty result -> 0.
     std::vector<int> empty;
     assert(recall_at_k(empty, gt, 10) == 0.0);
+
+    // 5. SpeedEngine GPU backend (OpenCL or CUDA) matches brute force.
+    {
+        int sn = 20000, sd = 48;
+        auto corpus = make_f32(sn, sd, /*seed=*/123);
+        // cosine corpus: normalize each row so the engine's cosine == inner product.
+        std::vector<float> cnorm = corpus;
+        for (int i = 0; i < sn; i++) {
+            float norm = 0;
+            for (int j = 0; j < sd; j++) norm += cnorm[(size_t)i * sd + j] * cnorm[(size_t)i * sd + j];
+            norm = std::sqrt(norm);
+            float inv = norm > 1e-12f ? 1.0f / norm : 0.f;
+            for (int j = 0; j < sd; j++) cnorm[(size_t)i * sd + j] *= inv;
+        }
+        SpeedEngine eng(cnorm.data(), sn, sd, Metric::Cosine);
+        printf("SpeedEngine backend: %s (has_gpu=%d)\n",
+               eng.backend_name(), eng.has_gpu() ? 1 : 0);
+
+        std::mt19937 rng(99);
+        std::uniform_real_distribution<float> u(-1.f, 1.f);
+        int ok = 0, total = 20;
+        for (int qi = 0; qi < total; qi++) {
+            std::vector<float> q(sd);
+            float qn = 0;
+            for (auto& x : q) { x = u(rng); qn += x * x; }
+            qn = std::sqrt(qn);
+            float inv = qn > 1e-12f ? 1.0f / qn : 0.f;
+            for (auto& x : q) x *= inv;  // normalize query
+            auto r = eng.search(q.data(), 5);
+            int expected = brute_argmax(cnorm, sn, sd, q);
+            if (!r.indices.empty() && r.indices[0] == expected) ok++;
+        }
+        printf("SpeedEngine GPU top-1 matches brute force: %d/%d\n", ok, total);
+        assert(ok == total);  // GPU must match exact scan
+    }
 
     printf("\nALL TESTS PASSED\n");
     return 0;

@@ -81,7 +81,7 @@ recall_at_k = _native.recall_at_k
 ndcg_at_k = _native.ndcg_at_k
 read_bigann_groundtruth = _native.read_bigann_groundtruth
 
-__version__ = "1.6.1"
+__version__ = "1.7.0"
 __all__ = [
     "Config",
     "SearchResult",
@@ -123,6 +123,9 @@ def build_engine(
     # Speed (GPU) mode — direct HNSW competitor via QKᵀ matmul (attention)
     speed: bool = False,
     gpu_dtype: str = "float32",
+    # When speed=True and require_gpu=True, raise RuntimeError instead of
+    # silently falling back to the CPU backend if no CUDA GPU is usable.
+    require_gpu: bool = False,
     # O(K) anchor navigation within speed mode (PiPrime anchors + SO(4)):
     # n_anchors>=2 routes queries to the nprobe most-similar anchor cells
     # (sublinear); 0 = brute-force exact scan.
@@ -267,6 +270,7 @@ def build_engine(
             dtype=gpu_dtype,
             n_anchors=int(speed_n_anchors),
             nprobe=int(speed_nprobe),
+            require_gpu=require_gpu,
         )
 
     engine = MadhavaL2(cfg)
@@ -592,9 +596,10 @@ class MadhavaSpeed:
     """
 
     def __init__(self, corpus, *, k=10, metric="cosine", dtype="float32",
-                 n_anchors=0, nprobe=4):
+                 n_anchors=0, nprobe=4, require_gpu=False):
         self._k = int(k)
         self._metric = metric.lower()
+        self._require_gpu = bool(require_gpu)
         arr = np.ascontiguousarray(corpus)
         self._n = arr.shape[0]
         self._dim = arr.shape[1]
@@ -616,8 +621,11 @@ class MadhavaSpeed:
                     np.ascontiguousarray(f32), self._dim,
                     1 if self._metric == "l2" else 0,
                     int(n_anchors), int(nprobe),
+                    bool(require_gpu),
                 )
             except Exception:
+                if self._require_gpu:
+                    raise
                 self._native = None
 
         if self._native is None:

@@ -5,6 +5,40 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] — 2026-08-07
+
+### 🔊 OpenCL GPU backend (generic, vendor-neutral) + forced GPU
+
+- **OpenCL is now the default GPU backend** (`src/speed_opencl.cpp`): the
+  generic, vendor-neutral path that works on NVIDIA/AMD/Intel GPUs with **no
+  offline compiler (nvcc) and no CUDA toolkit**. Kernels are JIT-compiled at
+  runtime by the driver — the compute equivalent of how GLQuake used OpenGL
+  instead of a proprietary toolkit, with a software fallback.
+- CUDA (`src/speed_gpu.cu`) is now **opt-in** at build time via
+  `-DMADHAVA_USE_CUDA=ON`; the default build uses OpenCL when the loader is
+  present, else CPU.
+- Backend selection is logged at configure time:
+  `Madhava speed GPU backend: opencl|cuda|cpu`.
+- Verified on an RTX 5060 Ti: QKᵀ + device topk matches brute-force exactly
+  (20/20 top-1, top-k exact), and batch throughput (N=100k, 1000 queries) is
+  1.77× faster than the CPU backend (74 ms vs 131 ms).
+- New C++ test validates the GPU backend matches exact scan when `has_gpu()`.
+
+### 🔊 Speed engine GPU/CPU transparency + forced GPU
+
+- `SpeedEngine` (and `MadhavaSpeed` / `build_engine(speed=True)`) now log clearly
+  to stderr when the GPU backend cannot be enabled and the engine falls back to
+  CPU, with the exact reason (`build without CUDA` vs `no CUDA device found`).
+- New `require_gpu=True` option: raises `RuntimeError` instead of silently
+  degrading to the CPU backend when no usable GPU is present. Exposed at the
+  C++ constructor, the `SpeedEngine` pybind, `MadhavaSpeed(..., require_gpu=True)`,
+  and `build_engine(..., speed=True, require_gpu=True)`.
+- New `SpeedEngine.backend_name()` (`"gpu"`/`"cpu"`) and `gpu_reason()` accessors
+  for logs and diagnostics, mirrored in the Python bindings.
+- Internals: the GPU enable hook is now the private method `SpeedEngine::enable_gpu`
+  (no more free `_enable_gpu` that shadowed the CUDA definition), and the CPU
+  stubs are guarded by `#ifndef MADHAVAS_HAS_CUDA` so a CUDA build links cleanly.
+
 ## [1.4.0] — 2026-08-07
 
 ### 🚀 Speed mode (GPU) — direct HNSW competitor

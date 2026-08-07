@@ -25,6 +25,7 @@
 #define WINNEX_MADHAVA_SPEED_ENGINE_HPP
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace winnex_madhava {
@@ -49,9 +50,9 @@ public:
     //   members of those cells. When n_anchors < 2, it falls back to the full
     //   exact scan (brute force).
     SpeedEngine(const float* corpus, int n, int dim, Metric metric,
-                int n_anchors = 0, int nprobe = 4);
+                int n_anchors = 0, int nprobe = 4, bool require_gpu = false);
     SpeedEngine(const uint8_t* corpus, int n, int dim, Metric metric,
-                int n_anchors = 0, int nprobe = 4);
+                int n_anchors = 0, int nprobe = 4, bool require_gpu = false);
     ~SpeedEngine();
 
     SpeedEngine(const SpeedEngine&) = delete;
@@ -59,6 +60,13 @@ public:
 
     // True if this build has a usable CUDA backend AND a device was found.
     bool has_gpu() const { return use_gpu_; }
+
+    // Human-readable backend in use: "gpu" or "cpu" (plus the reason the GPU
+    // was not enabled, via gpu_reason()). Useful for logs and diagnostics.
+    const char* backend_name() const { return use_gpu_ ? "gpu" : "cpu"; }
+    // Why the GPU was not enabled (e.g. "build without CUDA", "no CUDA device
+    // found"). Empty string when use_gpu_ is true.
+    const std::string& gpu_reason() const { return gpu_reason_; }
 
     // Single query: scores = q @ corpus.T → topk.
     // query: (dim,) float32. Returns top-k indices (best first).
@@ -76,19 +84,35 @@ private:
     SpeedResult search_cpu(const float* query, int k) const;
     SpeedResult search_batch_cpu(const float* queries, int nq, int k) const;
 
-    // CUDA hooks (defined in speed_gpu.cu when a CUDA toolkit is present).
-    // No-op when CUDA is unavailable.
+    // Enable the GPU backend (CUDA hooks defined in speed_gpu.cu when a CUDA
+    // toolkit is present; CPU stub in speed_cpu.cpp otherwise). Copies the
+    // corpus to device memory and sets use_gpu_ on success. When require_gpu_
+    // is true, throws std::runtime_error instead of silently falling back to
+    // the CPU backend, and records the reason in gpu_reason_.
+    void enable_gpu(const std::vector<float>& corpus, int n, int dim);
+
+    // GPU hooks. Implemented by the compiled backend:
+    //   - speed_gpu.cu      when a CUDA toolkit is present (MADHAVA_HAS_CUDA)
+    //   - speed_opencl.cpp  when OpenCL is present (MADHAVA_HAS_OPENCL)
+    //   - speed_cpu.cpp     CPU-only stubs (otherwise)
     static void init_gpu_impl();
     static void free_gpu_impl();
-    static bool cuda_available();
+    static bool gpu_available();
     // Returns scores[nq][N] computed via cuBLAS SGEMM (the QKᵀ matmul).
     // Normalizes cosine queries; caller applies the L2 correction + topk.
     void scores_gpu(const float* queries, int nq, float* scores_host) const;
+
+    // Optimized GPU path: QKᵀ matmul + device topk, returning only the nq·k
+    // indices (no full-score D2H copy). Buffers reused across calls.
+    SpeedResult scores_gpu_topk(const float* queries, int nq, int k,
+                                std::vector<int>& out_indices) const;
 
     int n_;
     int dim_;
     bool is_cosine_;
     bool use_gpu_ = false;
+    bool require_gpu_ = false;
+    std::string gpu_reason_;   // why the GPU was not enabled (log/diagnostics)
 
     // O(K) anchor navigation: K PiPrime anchors + per-vector cell assignment.
     int n_anchors_ = 0;

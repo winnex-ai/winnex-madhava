@@ -114,13 +114,14 @@ PYBIND11_MODULE(_winnex_madhava, m) {
     // SpeedEngine — native speed mode (QKᵀ matmul: CUDA if available, else CPU)
     py::class_<SpeedEngine>(m, "SpeedEngine")
         .def(py::init([](py::array_t<float, py::array::c_style> arr, int dim, int metric,
-                         int n_anchors, int nprobe) {
+                         int n_anchors, int nprobe, bool require_gpu) {
                  auto info = arr.request();
                  return new SpeedEngine((const float*)info.ptr, (int)info.shape[0], dim,
-                                        (Metric)metric, n_anchors, nprobe);
+                                        (Metric)metric, n_anchors, nprobe, require_gpu);
              }),
              py::arg("corpus_f32"), py::arg("dim"), py::arg("metric"),
-             py::arg("n_anchors") = 0, py::arg("nprobe") = 4)
+             py::arg("n_anchors") = 0, py::arg("nprobe") = 4,
+             py::arg("require_gpu") = false)
         .def("search",
              [](const SpeedEngine& self, py::array_t<float, py::array::c_style> q, int k) {
                  auto info = q.request();
@@ -145,7 +146,9 @@ PYBIND11_MODULE(_winnex_madhava, m) {
              py::arg("queries"), py::arg("nq"), py::arg("k"))
         .def("num_vectors", &SpeedEngine::num_vectors)
         .def("dim", &SpeedEngine::dim)
-        .def("has_gpu", &SpeedEngine::has_gpu);
+        .def("has_gpu", &SpeedEngine::has_gpu)
+        .def("backend_name", &SpeedEngine::backend_name)
+        .def("gpu_reason", &SpeedEngine::gpu_reason);
 
     m.def("recall_at_k", &recall_at_k, py::arg("result"), py::arg("gt_set"), py::arg("k"));
     m.def("ndcg_at_k", &ndcg_at_k, py::arg("result"), py::arg("gt_set"), py::arg("k"));

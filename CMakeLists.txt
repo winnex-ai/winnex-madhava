@@ -1,14 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(winnex_madhava VERSION 1.0.1 LANGUAGES CXX)
 
-# Optional CUDA for the native speed mode (cuBLAS QKᵀ matmul).
-# Without a CUDA toolkit the CPU speed backend is used (OpenMP/AVX2).
-include(CheckLanguage)
-check_language(CUDA)
-if(CMAKE_CUDA_COMPILER)
-    enable_language(CUDA)
-endif()
-
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -37,30 +29,71 @@ find_package(OpenMP REQUIRED)
 # pybind11 module build does not link against libpython itself.
 find_package(Python3 COMPONENTS Interpreter Development)
 
+# --- GPU backend selection ---------------------------------------------
+# CUDA is OPT-IN (MADHAVA_USE_CUDA=ON). The generic default backend is
+# OpenCL (speed_opencl.cpp) — the vendor-neutral path that works on
+# NVIDIA/AMD/Intel GPUs without any offline compiler. Without OpenCL it
+# falls back to CPU only (speed_cpu.cpp).
+option(MADHAVA_USE_CUDA "Use the CUDA backend (opt-in; default is OpenCL)" OFF)
+include(CheckLanguage)
+check_language(CUDA)
+if(MADHAVA_USE_CUDA)
+    if(CMAKE_CUDA_COMPILER)
+        enable_language(CUDA)
+    endif()
+endif()
+
+set(MADHAVA_GPU_BACKEND "cpu")
+if(MADHAVA_USE_CUDA AND CMAKE_CUDA_COMPILER)
+    set(MADHAVA_GPU_BACKEND "cuda")
+else()
+    # OpenCL backend uses dlopen() at runtime (no link-time loader needed);
+    # only the vendored headers are required to build it.
+    set(MADHAVA_GPU_BACKEND "opencl")
+endif()
+message(STATUS "Madhava speed GPU backend: ${MADHAVA_GPU_BACKEND}")
+
 # --- Main static library -----------------------------------------------
 set(MADHAVA_CORE_SRC src/winnex_madhava.cpp src/speed_cpu.cpp)
-if(CMAKE_CUDA_COMPILER)
+if(MADHAVA_GPU_BACKEND STREQUAL "cuda")
     list(APPEND MADHAVA_CORE_SRC src/speed_gpu.cu)
     add_compile_definitions(MADHAVA_HAS_CUDA)
+elseif(MADHAVA_GPU_BACKEND STREQUAL "opencl")
+    list(APPEND MADHAVA_CORE_SRC src/speed_opencl.cpp)
+    add_compile_definitions(MADHAVA_HAS_OPENCL)
 endif()
 
 add_library(winnex_madhava ${MADHAVA_CORE_SRC})
 target_include_directories(winnex_madhava PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+# OpenCL headers are vendored (no system dependency at build time).
+target_include_directories(winnex_madhava PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendor)
 target_link_libraries(winnex_madhava PUBLIC OpenMP::OpenMP_CXX)
-if(CMAKE_CUDA_COMPILER)
+if(MADHAVA_GPU_BACKEND STREQUAL "cuda")
     find_package(CUDAToolkit REQUIRED)
     target_link_libraries(winnex_madhava PUBLIC CUDA::cublas CUDA::cudart)
+endif()
+if(MADHAVA_GPU_BACKEND STREQUAL "opencl")
+    find_library(DL_LIB dl)
+    if(DL_LIB)
+        target_link_libraries(winnex_madhava PUBLIC ${DL_LIB})
+    endif()
 endif()
 
 # --- Shared library (for pybind11) --------------------------------------
 add_library(winnex_madhava_shared SHARED ${MADHAVA_CORE_SRC})
 set_target_properties(winnex_madhava_shared PROPERTIES OUTPUT_NAME winnex_madhava)
 target_include_directories(winnex_madhava_shared PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(winnex_madhava_shared PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendor)
 target_link_libraries(winnex_madhava_shared PUBLIC OpenMP::OpenMP_CXX)
-if(CMAKE_CUDA_COMPILER)
+if(MADHAVA_GPU_BACKEND STREQUAL "cuda")
     target_link_libraries(winnex_madhava_shared PUBLIC CUDA::cublas CUDA::cudart)
+elseif(MADHAVA_GPU_BACKEND STREQUAL "opencl")
+    find_library(DL_LIB dl)
+    if(DL_LIB)
+        target_link_libraries(winnex_madhava_shared PUBLIC ${DL_LIB})
+    endif()
 endif()
 
 # Install

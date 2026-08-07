@@ -14,7 +14,9 @@
 #include <algorithm>
 #include <cmath>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
+#include <stdexcept>
 
 #if defined(__AVX2__) && defined(__FMA__)
 #include <immintrin.h>
@@ -26,13 +28,32 @@
 
 namespace winnex_madhava {
 
-// The CUDA enable helper is defined in speed_gpu.cu (which has CUDA). In
-// this CPU TU we provide a no-op stub so the constructors compile and
-// use_gpu_ stays false — the native CPU backend is always correct.
-namespace {
-void _enable_gpu(class SpeedEngine& /*self*/, const std::vector<float>& /*corpus*/,
-                 int /*n*/, int /*dim*/) {}
+#if !defined(MADHAVA_HAS_CUDA) && !defined(MADHAVA_HAS_OPENCL)
+// GPU enable: the real implementation lives in speed_gpu.cu (CUDA) or
+// speed_opencl.cpp (OpenCL). This CPU TU provides the fallback: the GPU
+// cannot be enabled here, so we log why and (when require_gpu is set) throw
+// instead of silently degrading.
+void SpeedEngine::enable_gpu(const std::vector<float>& /*corpus*/, int /*n*/, int /*dim*/) {
+    gpu_reason_ = "build without a GPU backend (neither CUDA nor OpenCL)";
+    if (require_gpu_) {
+        throw std::runtime_error(
+            "SpeedEngine: GPU required but this build has no GPU backend. "
+            "Build with OpenCL or CUDA, or pass require_gpu=False to fall "
+            "back to the CPU backend.");
+    }
+    std::fprintf(stderr,
+                 "[Winnex Madhava] SpeedEngine: GPU unavailable — falling back "
+                 "to CPU backend. Reason: %s\n",
+                 gpu_reason_.c_str());
 }
+#endif
+
+#if !defined(MADHAVA_HAS_CUDA) && !defined(MADHAVA_HAS_OPENCL)
+// Static GPU hooks — CPU-only stubs (real impls live in the GPU backend).
+void SpeedEngine::init_gpu_impl() {}
+void SpeedEngine::free_gpu_impl() {}
+bool SpeedEngine::gpu_available() { return false; }
+#endif
 
 namespace {
 
@@ -58,8 +79,9 @@ inline float dot_f32(const float* a, const float* b, int d) {
 
 // --- Construction ---------------------------------------------------------
 SpeedEngine::SpeedEngine(const float* corpus, int n, int dim, Metric metric,
-                         int n_anchors, int nprobe)
-    : n_(n), dim_(dim), is_cosine_(metric == Metric::Cosine) {
+                         int n_anchors, int nprobe, bool require_gpu)
+    : n_(n), dim_(dim), is_cosine_(metric == Metric::Cosine),
+      require_gpu_(require_gpu) {
     corpus_f32_.resize((size_t)n * dim);
     norms_.resize((size_t)n);
     if (is_cosine_) {
@@ -88,12 +110,13 @@ SpeedEngine::SpeedEngine(const float* corpus, int n, int dim, Metric metric,
     }
     n_anchors_ = n_anchors; nprobe_ = nprobe;
     if (n_anchors_ >= 2) { build_anchors(); }
-    _enable_gpu(*this, corpus_f32_, n, dim);
+    enable_gpu(corpus_f32_, n, dim);
 }
 
 SpeedEngine::SpeedEngine(const uint8_t* corpus, int n, int dim, Metric metric,
-                         int n_anchors, int nprobe)
-    : n_(n), dim_(dim), is_cosine_(metric == Metric::Cosine) {
+                         int n_anchors, int nprobe, bool require_gpu)
+    : n_(n), dim_(dim), is_cosine_(metric == Metric::Cosine),
+      require_gpu_(require_gpu) {
     corpus_f32_.resize((size_t)n * dim);
     norms_.resize((size_t)n);
 #pragma omp parallel for
@@ -115,7 +138,7 @@ SpeedEngine::SpeedEngine(const uint8_t* corpus, int n, int dim, Metric metric,
     }
     n_anchors_ = n_anchors; nprobe_ = nprobe;
     if (n_anchors_ >= 2) { build_anchors(); }
-    _enable_gpu(*this, corpus_f32_, n, dim);
+    enable_gpu(corpus_f32_, n, dim);
 }
 
 SpeedEngine::~SpeedEngine() {
@@ -225,12 +248,22 @@ void SpeedEngine::build_anchors() {
     for (int k = 0; k < K; k++) cell_radius_[k] = std::sqrt(cell_radius_[k]);
 }
 
-// Stub for the CUDA scores matmul (defined in speed_gpu.cu when CUDA is
-// present). Never called when use_gpu_ is false; exists only so the CPU TU
-// links cleanly without a CUDA toolkit.
+#if !defined(MADHAVA_HAS_CUDA) && !defined(MADHAVA_HAS_OPENCL)
+// Stub for the GPU scores matmul (defined in speed_gpu.cu / speed_opencl.cpp
+// when a GPU backend is present). Never called when use_gpu_ is false; exists
+// only so the CPU TU links cleanly without any GPU backend.
 void SpeedEngine::scores_gpu(const float*, int, float*) const {
-    // unreachable without CUDA
+    // unreachable without a GPU backend
 }
+
+// Stub for the optimized GPU topk (defined in speed_gpu.cu / speed_opencl.cpp
+// when a GPU backend is present). Never called when use_gpu_ is false.
+SpeedResult SpeedEngine::scores_gpu_topk(const float*, int, int,
+                                         std::vector<int>&) const {
+    SpeedResult r;  // unreachable without a GPU backend
+    return r;
+}
+#endif
 
 // --- Single-query search (CPU) --------------------------------------------
 SpeedResult SpeedEngine::search_cpu(const float* query, int k) const {
@@ -390,9 +423,9 @@ SpeedResult _topk_host(const std::vector<float>& scores_row, int N, int k,
 SpeedResult SpeedEngine::search(const float* query, int k) const {
     if (use_gpu_) {
         auto t0 = std::chrono::high_resolution_clock::now();
-        std::vector<float> scores((size_t)n_);
-        scores_gpu(query, 1, scores.data());
-        SpeedResult out = _topk_host(scores, n_, k, norms_, is_cosine_);
+        std::vector<int> idx;
+        SpeedResult out = scores_gpu_topk(query, 1, k, idx);
+        out.indices = idx;
         out.latency_ms = std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - t0).count();
         return out;
@@ -403,16 +436,9 @@ SpeedResult SpeedEngine::search(const float* query, int k) const {
 SpeedResult SpeedEngine::search_batch(const float* queries, int nq, int k) const {
     if (use_gpu_) {
         auto t0 = std::chrono::high_resolution_clock::now();
-        std::vector<float> all_scores((size_t)nq * n_);
-        scores_gpu(queries, nq, all_scores.data());
-        SpeedResult out;
-        out.bound_pairs = (long long)nq * n_;
-        for (int qi = 0; qi < nq; qi++) {
-            std::vector<float> row(all_scores.begin() + (size_t)qi * n_,
-                                   all_scores.begin() + (size_t)(qi + 1) * n_);
-            SpeedResult r = _topk_host(row, n_, k, norms_, is_cosine_);
-            out.indices.insert(out.indices.end(), r.indices.begin(), r.indices.end());
-        }
+        std::vector<int> idx;
+        SpeedResult out = scores_gpu_topk(queries, nq, k, idx);
+        out.indices = idx;
         out.latency_ms = std::chrono::duration<double, std::milli>(
             std::chrono::high_resolution_clock::now() - t0).count();
         return out;
