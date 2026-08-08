@@ -34,23 +34,35 @@ work-group por query** (1 SM ativo de 32 → ~3% da GPU), **acesso não-coalesci
 - **Corretude preservada**: 20/20 L2 + 20/20 cosine vs brute-force numpy;
   100/100 queries uint8 vs scan exato; batch == single-query.
 
-### 📊 Benchmark honesto 10M (Kaggle, P100)
+### 📊 Benchmark real — referência validada (Kaggle, P100)
 
-Novo notebook público:
-[winnex-madhava-1-7-honest-10m-gpu-vs-official-gt](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-honest-10m-gpu-vs-official-gt)
-— subset **10M** do BIGANN-100M, 100 queries, GT oficial, recall normalizado
-por cobertura (~8% no 10M).
+**Correção de integridade (2026-08-08).** Auditoria rigorosa provou que o GT
+oficial do dataset `shurangwu/bigann-100m` **não é utilizável com o seu base**:
+o `base.u8bin` tem ordem de vetores diferente da ordem canônica do BIGANN, logo
+os ids do GT apontam para vetores errados (verificado: 0/500 acertos no top-10
+exato). Recalls medidos contra esse GT (incluindo os R@10 de 0.52/0.836/0.44
+reportados anteriormente) **não são significativos** e devem ser descartados.
 
-| Método | R@10 | Lat (ms) | Eficiência |
+Novo notebook público (referência válida):
+[winnex-madhava-1-7-real-benchmark-vs-hnsw-ivf-pq](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-real-benchmark-vs-hnsw-ivf-pq)
+— usa o **scan exato local como teto** (recall vs vizinhos reais, independente
+do GT), documenta a validação do GT em runtime, e compara com FAISS
+HNSW/IVF/IVF-PQ no mesmo subset.
+
+**Resultados válidos (subset 1M, 100 queries, Kaggle GPU P100):**
+
+| Método | R@10 (vs teto exato) | Lat (ms) | Eficiência |
 |---|---|---|---|
-| Teto real (search_exact) | 0.4400 | 554.2 | — |
-| Madhava bound (5%/1%) | 0.4400 | 491.0 | 100% |
-| **Speed GPU (OpenCL v1.7.2)** | **0.4400** | **38.1** | **100%** |
-| Batch GPU | 0.4400 | 22.6 | 100% |
+| Madhava bound (5%/1%) | 0.9960 | 45.8 | 100% (0 vio) |
+| **Speed GPU (OpenCL v1.7.2)** | **1.0000** | **6.14** | **100%** |
+| Batch GPU | 1.0000 | 3.09 | 100% |
+| HNSW(ef=128) | 0.9760 | 0.56 | 98% |
+| IVF(nlist=4000,np=50) | 0.9250 | 0.75 | 93% |
+| IVF-PQ(nlist=4000) | 0.4780 | 0.23 | 48% |
 
-**O R@10=0.44 em 10M reproduz o valor documentado do projeto** (~0.43-0.52),
-com o speed GPU **~13× mais rápido que o bound engine** (38ms vs 491ms) e 0
-violações em todos os métodos.
+**O Madhava recupera 99.6-100% do top-10 exato com 0 violações**, e o speed GPU
+é exato (R@10=1.0) a 6.1ms — enquanto os baselines aproximados perdem recall
+(48-98%).
 
 ## [1.7.1] — 2026-08-07
 
@@ -153,6 +165,14 @@ ndcg@K   = DCG / IDCG, com IDCG usando min(K, |gt|)
 ```
 
 **Verificado (10M e 100M, GT oficial, Kaggle):**
+
+> ⚠️ **Nota de correção (2026-08-08).** Estes números usaram o arquivo GT do
+> dataset `shurangwu/bigann-100m`, que uma auditoria posterior provou ser
+> **inválido para o base do mesmo dataset** (ordem de vetores diferente da
+> canônica → ids do GT apontam para vetores errados). Ver
+> [Benchmark real](#📊-benchmark-real--referência-validada-kaggle-p100) na
+> v1.7.2. Os recalls absolutos abaixo **não são significativos**; a eficiência
+> relativa (100% vs teto) permanece como propriedade do motor.
 
 | Escala | R@10 | NDCG | Eficiência | Vio | Build |
 |---|---|---|---|---|---|
