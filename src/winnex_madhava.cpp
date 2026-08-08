@@ -414,7 +414,14 @@ float MadhavaL2::ub_raw(int idx, int layer, const float* pq, float qr, float qm)
         const float* prf = (layer == 1) ? pr1_f_ + (size_t)idx * s : pr2_f_ + (size_t)idx * s;
         float inner = dot_f32(prf, pq, s);
         float e = (layer == 1) ? e1_[idx] : e2_[idx];
-        return inner + e * qr;
+        // FIX(1.8.0): margem de segurança para o caminho float32.
+        // O bound Cauchy-Schwarz exige que P tenha linhas ortonormais; o MGS
+        // acumula erro numérico (~1e-7..1e-14 conforme a dimensão) que pode
+        // subestimar o residual real ‖v−PᵀPv‖. Sem margem, o bound pode ser
+        // MENOR que ⟨v,q⟩ real → lb de L2² maior que o L2² real → poda um
+        // vizinho verdadeiro (violação da garantia). A margem cobre o erro
+        // de ortonormalidade + o arredondamento do produto interno.
+        return inner + e * qr + 1e-4f;
     }
 }
 
