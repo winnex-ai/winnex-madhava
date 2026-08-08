@@ -1,0 +1,176 @@
+[{"stream_name":"stderr","time":5.5175871,"data":"/usr/local/lib/python3.12/dist-packages/nbformat/__init__.py:96: MissingIDFieldWarning: Cell is missing an id field, this will become a hard error in future nbformat versions. You may want to use `normalize()` on your notebooks before validations (available since nbformat 5.1.4). Previous versions of nbformat are fixing this issue transparently, and will stop doing so in the future.\n"}
+,{"stream_name":"stderr","time":5.517686147,"data":"  validate(nb)\n"}
+,{"stream_name":"stderr","time":6.279967522,"data":"0.00s - Debugger warning: It seems that frozen modules are being used, which may\n"}
+,{"stream_name":"stderr","time":6.279998466,"data":"0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off\n"}
+,{"stream_name":"stderr","time":6.28000384,"data":"0.00s - to python to disable frozen modules.\n"}
+,{"stream_name":"stderr","time":6.280008113,"data":"0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.\n"}
+,{"stream_name":"stderr","time":6.897205595,"data":"0.00s - Debugger warning: It seems that frozen modules are being used, which may\n"}
+,{"stream_name":"stderr","time":6.897234216,"data":"0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off\n"}
+,{"stream_name":"stderr","time":6.897239083,"data":"0.00s - to python to disable frozen modules.\n"}
+,{"stream_name":"stderr","time":6.897244815,"data":"0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.\n"}
+,{"stream_name":"stdout","time":10.16014787,"data":"     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 42.9/42.9 kB 1.8 MB/s eta 0:00:00\n"}
+,{"stream_name":"stdout","time":10.239161145,"data":"   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 613.1/613.1 kB 15.4 MB/s eta 0:00:00\n"}
+,{"stream_name":"stdout","time":10.362877113,"data":"     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 42.9/42.9 kB 1.8 MB/s eta 0:00:00\n"}
+,{"stream_name":"stdout","time":10.362916393999999,"data":"   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 613.1/613.1 kB 15.4 MB/s eta 0:00:00\n"}
+,{"stream_name":"stdout","time":17.315337916,"data":"   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 18.8/18.8 MB 86.3 MB/s eta 0:00:00\n"}
+,{"stream_name":"stdout","time":17.517452342,"data":"   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 18.8/18.8 MB 86.3 MB/s eta 0:00:00\n"}
+,{"stream_name":"stdout","time":20.025461684,"data":"installed winnex-madhava + faiss-cpu\n"}
+,{"stream_name":"stdout","time":20.039601548,"data":"libOpenCL present: True\n"}
+,{"stream_name":"stdout","time":20.054989145,"data":"winnex_madhava 1.7.2\n"}
+,{"stream_name":"stdout","time":20.055016582,"data":"CPU threads: 4\n"}
+,{"stream_name":"stdout","time":20.078475755,"data":"base : /kaggle/input/datasets/shurangwu/bigann-100m/base.u8bin\n"}
+,{"stream_name":"stdout","time":20.078499725,"data":"queries: /kaggle/input/datasets/shurangwu/bigann-100m/unif_query_10k.u8bin\n"}
+,{"stream_name":"stdout","time":20.078505015,"data":"gt   : /kaggle/input/datasets/shurangwu/bigann-100m/unif_groundtruth_10k.bin\n"}
+,{"stream_name":"stdout","time":20.078509936,"data":"BIGANN dataset found: True\n"}
+,{"stream_name":"stdout","time":20.129936346,"data":"Queries: (100, 128), GT: (100, 100)\n"}
+,{"stream_name":"stdout","time":20.226328357,"data":"Validando o GT contra o scan exato local (primeiras 20 queries)...\n"}
+,{"stream_name":"stdout","time":25.114037469,"data":"Scan exato vs GT oficial: recall = 0.0000\n"}
+,{"stream_name":"stdout","time":25.114142764,"data":"=\u003e GT INVALIDO para este base (desalinhamento de ordem).\n"}
+,{"stream_name":"stdout","time":25.114153799,"data":"=\u003e O recall vs GT oficial NAO sera reportado como referencia.\n"}
+,{"stream_name":"stdout","time":28.375307927,"data":"Computando o teto (scan exato local, 100 queries)...\n"}
+,{"stream_name":"stdout","time":33.47066007,"data":"Teto pronto. build=2.95s\n"}
+,{"stream_name":"stdout","time":33.486774548,"data":"         Teto (scan exato local) R@10=1.0000 lat=0.000ms qps=1000000000 build=3.0s eff=100%\n"}
+,{"stream_name":"stderr","time":46.518438168,"data":"[Winnex Madhava] SpeedEngine: GPU backend enabled (OpenCL QK^T + device topk, JIT-compiled kernels).\n"}
+,{"stream_name":"stdout","time":46.51945674,"data":"      Madhava bound (int8 5%/1%) R@10=0.9960 lat=45.760ms qps=22 build=2.0s eff=100%\n"}
+,{"stream_name":"stdout","time":46.51948475,"data":"  bound_violations total: 0\n"}
+,{"stream_name":"stdout","time":46.770070907,"data":"backend=gpu | has_gpu=True | reason=''\n"}
+,{"stream_name":"stderr","time":46.81358485,"data":"[Winnex Madhava] SpeedEngine: GPU backend enabled (OpenCL QK^T + device topk, JIT-compiled kernels).\n"}
+,{"stream_name":"stderr","time":46.813623782,"data":"\n"}
+,{"stream_name":"stderr","time":46.813629415,"data":"[Winnex Madhava] SpeedEngine: GPU backend enabled (OpenCL QK^T + device topk, JIT-compiled kernels).\n"}
+,{"stream_name":"stdout","time":47.187170623,"data":"  Madhava speed GPU (exact scan) R@10=1.0000 lat=6.139ms qps=163 build=1.5s eff=100%\n"}
+,{"stream_name":"stdout","time":47.18721289,"data":"  =\u003e speed GPU exact scan: deve atingir 100% do teto.\n"}
+,{"stream_name":"stdout","time":47.608339483,"data":"Batch 100 queries: 309.2ms total | 3.092ms/query | 323.4 QPS\n"}
+,{"stream_name":"stdout","time":47.608408321,"data":"Batch R@10 = 1.0000 (vs single 1.0000)\n"}
+,{"stream_name":"stdout","time":47.608417195,"data":"Batch == single-query (top-1 dos 10 primeiros): True\n"}
+,{"stream_name":"stdout","time":47.608422972,"data":"       Madhava speed GPU (batch) R@10=1.0000 lat=3.092ms qps=323 build=1.5s eff=100%\n"}
+,{"stream_name":"stdout","time":48.038798627,"data":"HNSW build (1,000,000)...\n"}
+,{"stream_name":"stdout","time":207.357984385,"data":"                     HNSW(ef=64) R@10=0.9330 lat=0.342ms qps=2928 build=159.3s eff=94%\n"}
+,{"stream_name":"stdout","time":207.358033818,"data":"                    HNSW(ef=128) R@10=0.9760 lat=0.555ms qps=1800 build=159.3s eff=98%\n"}
+,{"stream_name":"stdout","time":207.358041052,"data":"IVF build (nlist=4000)...\n"}
+,{"stream_name":"stdout","time":268.147783882,"data":"           IVF(nlist=4000,np=10) R@10=0.6840 lat=0.288ms qps=3472 build=60.7s eff=69%\n"}
+,{"stream_name":"stdout","time":268.147828814,"data":"           IVF(nlist=4000,np=50) R@10=0.9250 lat=0.749ms qps=1335 build=60.7s eff=93%\n"}
+,{"stream_name":"stdout","time":268.147836957,"data":"IVF-PQ build (nlist=4000, m=16)...\n"}
+,{"stream_name":"stdout","time":278.504908418,"data":"        IVF-PQ(nlist=4000,np=10) R@10=0.4780 lat=0.234ms qps=4282 build=10.4s eff=48%\n"}
+,{"stream_name":"stdout","time":278.504970959,"data":"FAISS baselines concluidos (subset 1M).\n"}
+,{"stream_name":"stdout","time":278.522556619,"data":"\n"}
+,{"stream_name":"stdout","time":278.522585518,"data":"================================================================================\n"}
+,{"stream_name":"stdout","time":278.522595245,"data":"SUMMARY — BIGANN subset N=1,000,000, 100 queries, dim=128\n"}
+,{"stream_name":"stdout","time":278.522606931,"data":"Teto = scan exato local (recall do metodo vs vizinhos reais)\n"}
+,{"stream_name":"stdout","time":278.522609565,"data":"GT oficial VALIDO? False (se False, recall vs GT nao e reportado)\n"}
+,{"stream_name":"stdout","time":278.522611978,"data":"================================================================================\n"}
+,{"stream_name":"stdout","time":278.522614288,"data":"                          Method     R@10  lat(ms)      QPS   eff%  extra\n"}
+,{"stream_name":"stdout","time":278.52261671,"data":"--------------------------------------------------------------------------------\n"}
+,{"stream_name":"stdout","time":278.522618983,"data":"         Teto (scan exato local)   1.0000    0.000 1000000000   100%  exact\n"}
+,{"stream_name":"stdout","time":278.522621512,"data":"        IVF-PQ(nlist=4000,np=10)   0.4780    0.234     4282    48%  subset-1M\n"}
+,{"stream_name":"stdout","time":278.522641987,"data":"           IVF(nlist=4000,np=10)   0.6840    0.288     3472    69%  subset-1M\n"}
+,{"stream_name":"stdout","time":278.522646168,"data":"                     HNSW(ef=64)   0.9330    0.342     2928    94%  subset-1M\n"}
+,{"stream_name":"stdout","time":278.522666312,"data":"                    HNSW(ef=128)   0.9760    0.555     1800    98%  subset-1M\n"}
+,{"stream_name":"stdout","time":278.522670867,"data":"           IVF(nlist=4000,np=50)   0.9250    0.749     1335    93%  subset-1M\n"}
+,{"stream_name":"stdout","time":278.522675253,"data":"       Madhava speed GPU (batch)   1.0000    3.092      323   100%  exact-batch\n"}
+,{"stream_name":"stdout","time":278.522678847,"data":"  Madhava speed GPU (exact scan)   1.0000    6.139      163   100%  exact-scan\n"}
+,{"stream_name":"stdout","time":278.522682097,"data":"      Madhava bound (int8 5%/1%)   0.9960   45.760       22   100%  vio=0\n"}
+,{"stream_name":"stdout","time":278.522685496,"data":"{\n"}
+,{"stream_name":"stdout","time":278.522688874,"data":"  \"package\": \"winnex-madhava\",\n"}
+,{"stream_name":"stdout","time":278.522692335,"data":"  \"version\": \"1.7.2\",\n"}
+,{"stream_name":"stdout","time":278.522695726,"data":"  \"gt_validated\": false,\n"}
+,{"stream_name":"stdout","time":278.522699135,"data":"  \"gt_recall_scan_exact\": 0.0,\n"}
+,{"stream_name":"stdout","time":278.5227047,"data":"  \"methodology\": \"RECALL vs SCAN EXATO LOCAL (teto matematicamente valido, independente do GT). GT oficial do dataset verificou-se INVALIDO para o base reordenado (0/500 acertos) e NAO e usado como referencia. Baselines FAISS no subset 1M (HNSW/IVF build inviavel em 10M no tempo Kaggle).\",\n"}
+,{"stream_name":"stdout","time":278.522713543,"data":"  \"gt_discovery\": \"base.u8bin do dataset shurangwu/bigann-100m tem ordem de vetores DIFERENTE da ordem canonica do base oficial BIGANN; os ids do unif_groundtruth_10k.bin referem-se ao base na ordem canonica e apontam para vetores errados no base local.\",\n"}
+,{"stream_name":"stdout","time":278.522717697,"data":"  \"N_subset\": 1000000,\n"}
+,{"stream_name":"stdout","time":278.522721152,"data":"  \"NQ\": 100,\n"}
+,{"stream_name":"stdout","time":278.522724621,"data":"  \"dim\": 128,\n"}
+,{"stream_name":"stdout","time":278.522727818,"data":"  \"k\": 10,\n"}
+,{"stream_name":"stdout","time":278.522731612,"data":"  \"methods\": [\n"}
+,{"stream_name":"stdout","time":278.52273514,"data":"    {\n"}
+,{"stream_name":"stdout","time":278.522738382,"data":"      \"method\": \"Teto (scan exato local)\",\n"}
+,{"stream_name":"stdout","time":278.522741806,"data":"      \"recall_at_10\": 1.0,\n"}
+,{"stream_name":"stdout","time":278.522745469,"data":"      \"latency_ms\": 0.0,\n"}
+,{"stream_name":"stdout","time":278.52275777,"data":"      \"qps\": 1000000000.0,\n"}
+,{"stream_name":"stdout","time":278.522761858,"data":"      \"build_s\": 2.9526896476745605,\n"}
+,{"stream_name":"stdout","time":278.52276558,"data":"      \"efficiency_pct\": 100.0,\n"}
+,{"stream_name":"stdout","time":278.522769133,"data":"      \"extra\": \"exact\"\n"}
+,{"stream_name":"stdout","time":278.522775399,"data":"    },\n"}
+,{"stream_name":"stdout","time":278.522778746,"data":"    {\n"}
+,{"stream_name":"stdout","time":278.52278201,"data":"      \"method\": \"Madhava bound (int8 5%/1%)\",\n"}
+,{"stream_name":"stdout","time":278.522785329,"data":"      \"recall_at_10\": 0.996,\n"}
+,{"stream_name":"stdout","time":278.52278863,"data":"      \"latency_ms\": 45.76009511947632,\n"}
+,{"stream_name":"stdout","time":278.52279214,"data":"      \"qps\": 21.85310142798156,\n"}
+,{"stream_name":"stdout","time":278.522795807,"data":"      \"build_s\": 2.0250799655914307,\n"}
+,{"stream_name":"stdout","time":278.52280043,"data":"      \"efficiency_pct\": 100.0,\n"}
+,{"stream_name":"stdout","time":278.522804196,"data":"      \"extra\": \"vio=0\"\n"}
+,{"stream_name":"stdout","time":278.522807715,"data":"    },\n"}
+,{"stream_name":"stdout","time":278.522811098,"data":"    {\n"}
+,{"stream_name":"stdout","time":278.522814981,"data":"      \"method\": \"Madhava speed GPU (exact scan)\",\n"}
+,{"stream_name":"stdout","time":278.522818696,"data":"      \"recall_at_10\": 1.0,\n"}
+,{"stream_name":"stdout","time":278.522822316,"data":"      \"latency_ms\": 6.138927936553955,\n"}
+,{"stream_name":"stdout","time":278.522826483,"data":"      \"qps\": 162.894891475358,\n"}
+,{"stream_name":"stdout","time":278.522830038,"data":"      \"build_s\": 1.5411725044250488,\n"}
+,{"stream_name":"stdout","time":278.522833681,"data":"      \"efficiency_pct\": 100.40160642570282,\n"}
+,{"stream_name":"stdout","time":278.522837111,"data":"      \"extra\": \"exact-scan\"\n"}
+,{"stream_name":"stdout","time":278.52284067,"data":"    },\n"}
+,{"stream_name":"stdout","time":278.522844113,"data":"    {\n"}
+,{"stream_name":"stdout","time":278.522847396,"data":"      \"method\": \"Madhava speed GPU (batch)\",\n"}
+,{"stream_name":"stdout","time":278.52285104,"data":"      \"recall_at_10\": 1.0,\n"}
+,{"stream_name":"stdout","time":278.522855272,"data":"      \"latency_ms\": 3.0916929244995117,\n"}
+,{"stream_name":"stdout","time":278.522858975,"data":"      \"qps\": 323.4473877000193,\n"}
+,{"stream_name":"stdout","time":278.522862308,"data":"      \"build_s\": 1.5411725044250488,\n"}
+,{"stream_name":"stdout","time":278.522865711,"data":"      \"efficiency_pct\": 100.40160642570282,\n"}
+,{"stream_name":"stdout","time":278.522869221,"data":"      \"extra\": \"exact-batch\"\n"}
+,{"stream_name":"stdout","time":278.522874175,"data":"    },\n"}
+,{"stream_name":"stdout","time":278.522877829,"data":"    {\n"}
+,{"stream_name":"stdout","time":278.522881535,"data":"      \"method\": \"HNSW(ef=64)\",\n"}
+,{"stream_name":"stdout","time":278.52288495,"data":"      \"recall_at_10\": 0.9330000000000002,\n"}
+,{"stream_name":"stdout","time":278.522888391,"data":"      \"latency_ms\": 0.3415036201477051,\n"}
+,{"stream_name":"stdout","time":278.522891758,"data":"      \"qps\": 2928.226645350014,\n"}
+,{"stream_name":"stdout","time":278.52289524,"data":"      \"build_s\": 159.26641249656677,\n"}
+,{"stream_name":"stdout","time":278.522900183,"data":"      \"efficiency_pct\": 93.67469879518075,\n"}
+,{"stream_name":"stdout","time":278.522907216,"data":"      \"extra\": \"subset-1M\"\n"}
+,{"stream_name":"stdout","time":278.522909648,"data":"    },\n"}
+,{"stream_name":"stdout","time":278.522915628,"data":"    {\n"}
+,{"stream_name":"stdout","time":278.522918036,"data":"      \"method\": \"HNSW(ef=128)\",\n"}
+,{"stream_name":"stdout","time":278.522920366,"data":"      \"recall_at_10\": 0.976,\n"}
+,{"stream_name":"stdout","time":278.522922932,"data":"      \"latency_ms\": 0.5554890632629395,\n"}
+,{"stream_name":"stdout","time":278.52292524,"data":"      \"qps\": 1800.2154608157466,\n"}
+,{"stream_name":"stdout","time":278.522927529,"data":"      \"build_s\": 159.26641249656677,\n"}
+,{"stream_name":"stdout","time":278.522929806,"data":"      \"efficiency_pct\": 97.99196787148594,\n"}
+,{"stream_name":"stdout","time":278.522932188,"data":"      \"extra\": \"subset-1M\"\n"}
+,{"stream_name":"stdout","time":278.522934453,"data":"    },\n"}
+,{"stream_name":"stdout","time":278.522937066,"data":"    {\n"}
+,{"stream_name":"stdout","time":278.522939247,"data":"      \"method\": \"IVF(nlist=4000,np=10)\",\n"}
+,{"stream_name":"stdout","time":278.522941555,"data":"      \"recall_at_10\": 0.684,\n"}
+,{"stream_name":"stdout","time":278.522943825,"data":"      \"latency_ms\": 0.28803110122680664,\n"}
+,{"stream_name":"stdout","time":278.522946088,"data":"      \"qps\": 3471.847296145155,\n"}
+,{"stream_name":"stdout","time":278.522948366,"data":"      \"build_s\": 60.693440437316895,\n"}
+,{"stream_name":"stdout","time":278.522950635,"data":"      \"efficiency_pct\": 68.67469879518073,\n"}
+,{"stream_name":"stdout","time":278.522952916,"data":"      \"extra\": \"subset-1M\"\n"}
+,{"stream_name":"stdout","time":278.522955211,"data":"    },\n"}
+,{"stream_name":"stdout","time":278.522957396,"data":"    {\n"}
+,{"stream_name":"stdout","time":278.522959576,"data":"      \"method\": \"IVF(nlist=4000,np=50)\",\n"}
+,{"stream_name":"stdout","time":278.522961868,"data":"      \"recall_at_10\": 0.925,\n"}
+,{"stream_name":"stdout","time":278.522964112,"data":"      \"latency_ms\": 0.7491564750671387,\n"}
+,{"stream_name":"stdout","time":278.522966411,"data":"      \"qps\": 1334.8346217128817,\n"}
+,{"stream_name":"stdout","time":278.522968688,"data":"      \"build_s\": 60.693440437316895,\n"}
+,{"stream_name":"stdout","time":278.522970971,"data":"      \"efficiency_pct\": 92.8714859437751,\n"}
+,{"stream_name":"stdout","time":278.522973298,"data":"      \"extra\": \"subset-1M\"\n"}
+,{"stream_name":"stdout","time":278.522975598,"data":"    },\n"}
+,{"stream_name":"stdout","time":278.522977765,"data":"    {\n"}
+,{"stream_name":"stdout","time":278.52297994,"data":"      \"method\": \"IVF-PQ(nlist=4000,np=10)\",\n"}
+,{"stream_name":"stdout","time":278.522982233,"data":"      \"recall_at_10\": 0.478,\n"}
+,{"stream_name":"stdout","time":278.522985178,"data":"      \"latency_ms\": 0.23354530334472656,\n"}
+,{"stream_name":"stdout","time":278.522987495,"data":"      \"qps\": 4281.824492629344,\n"}
+,{"stream_name":"stdout","time":278.522989788,"data":"      \"build_s\": 10.437680959701538,\n"}
+,{"stream_name":"stdout","time":278.522992099,"data":"      \"efficiency_pct\": 47.99196787148594,\n"}
+,{"stream_name":"stdout","time":278.522994406,"data":"      \"extra\": \"subset-1M\"\n"}
+,{"stream_name":"stdout","time":278.522996768,"data":"    }\n"}
+,{"stream_name":"stdout","time":278.522999091,"data":"  ]\n"}
+,{"stream_name":"stdout","time":278.52301567,"data":"}\n"}
+,{"stream_name":"stdout","time":278.523019559,"data":"report saved to /kaggle/working/report.json\n"}
+,{"stream_name":"stderr","time":281.047737615,"data":"/usr/local/lib/python3.12/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\\|'\n"}
+,{"stream_name":"stderr","time":281.047804261,"data":"  cells[i][c] = re.sub('\\\\\\\\\\|', '|', cell)\n"}
+,{"stream_name":"stderr","time":281.223542257,"data":"/usr/local/lib/python3.12/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\\_'\n"}
+,{"stream_name":"stderr","time":281.223579736,"data":"  text = re.sub(r'_', '\\_', text) # Escape underscores in display text\n"}
+,{"stream_name":"stderr","time":281.798627708,"data":"[NbConvertApp] Converting notebook __notebook__.ipynb to notebook\n"}
+,{"stream_name":"stderr","time":282.127466566,"data":"[NbConvertApp] Writing 37033 bytes to __notebook__.ipynb\n"}
+,{"stream_name":"stderr","time":284.428028154,"data":"[NbConvertApp] Converting notebook __notebook__.ipynb to html\n"}
+,{"stream_name":"stderr","time":285.282233837,"data":"[NbConvertApp] Writing 368060 bytes to __results__.html\n"}
+]

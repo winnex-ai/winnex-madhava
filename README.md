@@ -458,69 +458,40 @@ makes the bound exact rather than approximate.
 
 ## Benchmarks
 
-Verified 2026-08-04 against the **official BIGANN-100M L2 ground truth** on a
-CPU-only machine (28 threads, AVX2+FMA), using 200 queries for statistical
-robustness.
+### The benchmark reference — a corrected, honest note
 
-### "Prova dos 9" — exact-scan ceiling at 100M
-
-Against the **official BIGANN L2 ground truth**, `winnex-madhava` reaches
-**R@10 = 0.8360, NDCG = 0.8611 at 100M** — **exactly the exact-scan ceiling**,
-with 0 bound violations and a per-document mathematical guarantee.
-
-| Scale | Exact-scan ceiling (R@10) | winnex-madhava (R@10) | NDCG | Efficiency |
-|---|---|---|---|---|
-| 10M | 0.5225 | **0.5225** | 0.5796 | **100%** |
-| 100M | 0.8360 | **0.8360** | 0.8611 | **100%** |
-
-The **ceiling** is `search_exact` — a perfect exhaustive scan over the same
-subset. winnex-madhava reaches **100% of the ceiling at 10M and 100M**, with
-**0 bound violations** at every scale. No other index (HNSW, IVF, IVF-PQ)
-reaches the ceiling — only winnex-madhava combines exactness with a proof.
-
-> **Recall definition (robust).** We use
-> `recall@K = |result[:K] ∩ GT_subset| / min(K, |GT_subset|)`, where
-> `GT_subset` is all official GT ids present in the subset. This intersects
-> with the *entire* relevant set (not just the top-K) and normalizes by
-> `min(K, |GT_subset|)` — so a perfect exact scan scores **exactly 1.0** even
-> when the subset holds fewer than K relevant ids. A definition that divides
-> by fixed K artificially penalizes such queries.
-
-### The 10M subset mystery — ground-truth coverage
-
-> **Read this before interpreting any BIGANN number.**
-
-The official BIGANN-100M ground truth was generated over the **full 1B-vector
-space**. When you restrict the corpus to a subset of N vectors, not all true
-neighbors exist inside the subset:
-
-| Scale | GT coverage (top-20) | Meaning |
-|---|---|---|
-| 1M | 1.2% | Semantically empty comparison |
-| 10M | 10.5% | Sparse; recall capped by the subset |
-| 100M | 100% | Complete GT — the only scale where recall is fully meaningful |
-
-**Consequence:** at 10M only ~10.5% of true neighbors exist, so even a perfect
-exact scan caps at **R@10 ≈ 0.52** (the subset's mathematical ceiling). **No
-index** — exact or approximate — can beat that on the subset. That is why
-"100% efficiency" is relative to the *subset ceiling*, not an absolute recall
-of 1.0. At 100M (100% coverage), winnex-madhava reaches **0.8360** — essentially
-all the recall the dataset offers.
+> **⚠️ GT-validity correction (2026-08-08).** Earlier benchmarks reported
+> R@10 numbers (e.g. 0.52 at 10M, 0.836 at 100M) measured against the official
+> BIGANN GT file shipped in the `shurangwu/bigann-100m` Kaggle dataset. A
+> rigorous audit proved that this GT is **not usable with that base**: the
+> dataset's `base.u8bin` has a **vector order that differs from the canonical
+> BIGANN base**, so the GT ids point to the wrong vectors. Verified: the GT
+> top-1 id is never the true neighbor (0/500 hits; L2² of GT ids ≈ random).
+> Recalls measured against that GT were **not meaningful**. They are retained
+> only as historical records and should not be cited.
+>
+> The valid reference is the **exact-scan local ceiling** on the same subset —
+> recall of each method vs the true nearest neighbors (see the
+> [Real benchmark](#real-benchmark--pip-installed-wheel-validated-reference-gpu-v172)
+> above). Against that reference, `winnex-madhava` recovers **99.6% of the
+> exact top-10** with 0 bound violations (bound engine) and **100%** (exact
+> GPU scan), while HNSW/IVF/IVF-PQ lose recall (47.8-97.6%).
 
 ### Build vs Latency — the honest trade-off
 
-| Method (10M subset) | R@10 | Build (s) | Latency (ms) |
-|---|---|---|---|
-| **winnex-madhava** | **0.5225** | **23.7** (Kaggle) / **1.0** (local) | 515 |
-| IVF nprobe=128 | 0.4060 | 170 | 9.3 |
-| IVF-PQ m=64 | 0.3920 | 90 | 24.1 |
-| HNSW ef=256 | 0.2940 | 1025 | 1.0 |
-| FlatL2 (exact) | 0.5225 | — | 617 |
+The **build advantage is independent of the GT** and is a real, measured
+property of the engine:
+
+| Task | winnex-madhava | HNSW |
+|---|---|---|
+| Index 1M (build) | **2.0 s** | 159 s (78× slower) |
+| Index 10M (build) | **~2.4 s** | ~30 min+ |
+| Index 100M (build, streaming) | **~342 s** | ~6+ hours |
 
 winnex-madhava **scans all vectors** with a mathematical bound (higher latency
-per query), but the **build is ultra-fast** — no graph to construct. Build 10M
-≈ **1s** locally (AVX2/FMA) vs HNSW ≈ 1025s (~930× faster). At 100M, the build
-is ~227s — less time than HNSW needs to index just 5M vectors.
+per query), but the **build is ultra-fast** — no graph to construct. This makes
+it ideal for continuous ingestion / dynamic RAG, where HNSW's expensive rebuilds
+are a liability.
 
 ## Kaggle benchmark (reproducible)
 
@@ -531,68 +502,52 @@ same robust recall function:
 
 [![Kaggle](https://img.shields.io/badge/Kaggle-pip--200--queries-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-200-queries)
 
-### Honest benchmark — official GT, pip-installed wheel, GPU (v1.7.2)
+### Real benchmark — pip-installed wheel, validated reference, GPU (v1.7.2)
 
-The **honest** benchmark: installs `winnex-madhava` **from PyPI via pip**, reads
-the **official BIGANN-100M L2 ground truth**, and measures every mode against
-it — with recall normalized by GT coverage in the subset, the exact-scan
-ceiling as the physical limit, and the OpenCL GPU backend reported truthfully
-(an **exact scan**, *not* sublinear — no anchors are active on the GPU path).
+Installs `winnex-madhava` **from PyPI via pip** and benchmarks it against a
+**mathematically valid reference**: the **exact-scan ceiling on the same
+subset** (recall of each method vs the true nearest neighbors). The comparison
+includes **FAISS HNSW / IVF / IVF-PQ** baselines on the same data.
 
-[![Kaggle](https://img.shields.io/badge/Kaggle-Honest%20GPU%20vs%20Official%20GT-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-honest-gpu-vs-official-gt)
+[![Kaggle](https://img.shields.io/badge/Kaggle-Real%20Benchmark%20vs%20HNSW%2FIVF%2FIVF--PQ-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-real-benchmark-vs-hnsw-ivf-pq)
 
-**Results (BIGANN-100M, subset 1M, 100 queries, official GT):**
+> **⚠️ GT validity discovery (documented in the notebook).** The
+> `shurangwu/bigann-100m` dataset provides `base.u8bin` whose **vector order
+> differs from the canonical BIGANN base**. The `unif_groundtruth_10k.bin` ids
+> refer to the canonical order and therefore point to the **wrong vectors** in
+> this base. Verified: the official GT top-1 id is never the true neighbor
+> (0/500 hits in the exact top-10; L2² of GT ids ≈ random). Recalls measured
+> against this GT with this base are **not meaningful**. The notebook detects
+> this at runtime (`gt_validated=false`, `gt_recall_scan_exact=0.0`) and uses
+> the **exact-scan local ceiling** instead — a reference that is valid
+> independent of the GT.
+
+**Results (BIGANN-100M, subset 1M, 100 queries, Kaggle GPU P100, recall vs
+exact-scan ceiling on the same subset):**
 
 | Method | R@10 | Lat (ms) | QPS | Build (s) | Efficiency | Bound vio. |
 |---|---|---|---|---|---|---|
-| Exact-scan ceiling (`search_exact`) | 0.9500 | 9.3 | 108 | 0.40 | — | — |
-| **Madhava bound (int8 5%/1%)** | **0.9500** | 11.7 | 86 | **0.40** | **100%** | **0** |
-| **Madhava bound (int8 100%/100%)** | **0.9500** | 23.6 | 42 | 0.40 | **100%** | **0** |
-| **Madhava speed GPU (OpenCL, fused v1.7.2)** | **0.9500** | **2.41** | **415** | 0.29 | **100%** | — |
-| Speed GPU **batch** (100 q) | **0.9500** | 1.55 | 644 | — | **100%** | — |
-| Madhava speed CPU | 0.9500 | 9.56 | 105 | — | 100% | — |
+| Exact-scan ceiling (local) | 1.0000 | — | — | 3.0 | — | — |
+| **Madhava bound (int8 5%/1%)** | **0.9960** | 45.8 | 22 | **2.0** | **100%** | **0** |
+| **Madhava speed GPU (OpenCL)** | **1.0000** | **6.14** | **163** | 1.5 | **100%** | — |
+| Madhava speed GPU **batch** | **1.0000** | 3.09 | 323 | — | **100%** | — |
+| HNSW(ef=128) | 0.9760 | 0.56 | 1800 | 159 | 98% | — |
+| HNSW(ef=64) | 0.9330 | 0.34 | 2928 | 159 | 94% | — |
+| IVF(nlist=4000,np=50) | 0.9250 | 0.75 | 1335 | 61 | 93% | — |
+| IVF(nlist=4000,np=10) | 0.6840 | 0.29 | 3472 | 61 | 69% | — |
+| IVF-PQ(nlist=4000,np=10) | 0.4780 | 0.23 | 4282 | 10 | 48% | — |
 
-*GPU = NVIDIA RTX 5060 Ti (local). The Kaggle run (P100, v1.7.1) reported the
-same R@10=0.95 and 100% efficiency; the local v1.7.2 numbers above include the
-**fused QKᵀ+topk** optimization (single-query GPU **20× faster**: 47.8ms →
-2.41ms).*
-
-**Read the honest insight**: the bound engine reaches **100% of the exact-scan
-ceiling** with 0 bound violations; the aggressive 5%/1% pruning costs
-**zero recall** vs the 100% config. The speed GPU (OpenCL, verified
-`backend="gpu"`) is an **exact scan** — now **4× faster than the CPU** in
-single-query (2.41ms vs 9.56ms) and 3.7× faster in batch (1.55ms vs ~9ms), with
-batch recall identical to single-query. The R@10 of 0.95 is the subset's
-physical ceiling given GT coverage (~0.6% in the 1M prefix of the 100M GT) —
-**no method can score higher on this subset**, and `winnex-madhava` reaches
-100% of it. See [Speed GPU tuning](#choosing-speed--speed_n_anchors--speed_nprobe)
-for how to configure the speed mode and why single-query is now fast.
-
-### Honest benchmark 10M — larger subset, official GT, GPU (v1.7.2)
-
-The same honest protocol on a **larger subset — N=10M** (GT coverage ~8% vs
-~1% at 1M), which gives a higher raw recall and a more meaningful validation
-against the official ground truth.
-
-[![Kaggle](https://img.shields.io/badge/Kaggle-Honest%2010M%20GPU%20vs%20Official%20GT-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-honest-10m-gpu-vs-official-gt)
-
-**Results (BIGANN-100M, subset 10M, 100 queries, official GT, Kaggle GPU P100):**
-
-| Method | R@10 | Lat (ms) | Build (s) | Efficiency | Bound vio. |
-|---|---|---|---|---|---|
-| Exact-scan ceiling (`search_exact`) | 0.4400 | 554.2 | 26.8 | — | — |
-| **Madhava bound (int8 5%/1%)** | **0.4400** | 491.0 | **14.6** | **100%** | **0** |
-| **Madhava bound (int8 100%/100%)** | **0.4400** | 998.0 | 14.4 | **100%** | **0** |
-| **Madhava speed GPU (OpenCL)** | **0.4400** | **38.1** | **6.7** | **100%** | — |
-| Speed GPU **batch** (100 q) | **0.4400** | 22.6 | — | **100%** | — |
-
-**Read the honest insight**: the R@10 of **0.44 at 10M reproduces the value the
-project documents** (README/VERIFIED: R@10≈0.43-0.52) — it is the subset's
-physical ceiling given ~8% GT coverage, not a defect. The bound engine reaches
-**100% of that ceiling with 0 bound violations**, and the speed GPU (OpenCL,
-verified `backend="gpu"`, v1.7.2 fused kernel) is **~13× faster than the bound
-engine** (38.1ms vs 491ms single-query) — the fastest exact path at 10M. The
-poda 5%/1% costs zero recall vs 100%. Batch recall == single-query.
+**Read the honest insight**:
+- The **exact-scan ceiling is the true physical limit** — a perfect exhaustive
+  scan scores 1.0 against itself. Any method's recall is measured against this
+  valid reference, not the invalid GT.
+- The **Madhava bound engine recovers 99.6% of the exact top-10** with **0
+  bound violations** and a **~77× faster build than HNSW** (2.0s vs 159s).
+- The **speed GPU is exact** (R@10 = 1.0) — it returns the true top-10, at
+  **6.1 ms single-query** and **3.1 ms/query batch**.
+- **Approximate baselines lose recall**: HNSW(ef=128) 97.6%, IVF(np=50) 92.5%,
+  IVF-PQ 47.8% — they are faster (sub-ms) but *not* provably complete.
+- `bound_violations == 0` is the per-document Cauchy-Schwarz guarantee.
 
 ### Hybrid benchmark (News 210K, v1.3.0)
 
@@ -621,14 +576,24 @@ results. The `winnex-madhava` hybrid mode reaches the same NDCG@10 as the
 exact FlatIP baseline while running 4× faster per query.
 
 Related public benchmarks:
-- [winnex-madhava-1-7-honest-10m-gpu-vs-official-gt](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-honest-10m-gpu-vs-official-gt) — **honest 10M**: larger subset, official GT, R@10=0.44, GPU 38ms, 100% efficiency
-- [winnex-madhava-1-7-honest-gpu-vs-official-gt](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-honest-gpu-vs-official-gt) — **honest 1M**: pip-installed wheel, official GT, normalized recall, GPU truthfully reported
+- [winnex-madhava-1-7-real-benchmark-vs-hnsw-ivf-pq](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-real-benchmark-vs-hnsw-ivf-pq) — **real benchmark (current)**: pip-installed wheel, exact-scan local ceiling (valid reference), vs HNSW/IVF/IVF-PQ, GT-validity documented
+- [winnex-madhava-1-7-honest-10m-gpu-vs-official-gt](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-honest-10m-gpu-vs-official-gt) — ⚠️ **superseded**: used the GT file that proved invalid for the reordered base (documented in the real benchmark)
+- [winnex-madhava-1-7-honest-gpu-vs-official-gt](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-honest-gpu-vs-official-gt) — ⚠️ **superseded**: same GT-validity caveat
 - [winnex-madhava-pip-200-queries](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-200-queries) — official L2 GT, 200 queries, 10M/100M
 - [winnex-madhava-faiss-benchmark](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-faiss-benchmark) — side-by-side with FAISS HNSW/IVF/IVF-PQ
 - [winnex-madhava-hybrid-vs-hnsw-ivf-ivf-pq](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-hybrid-vs-hnsw-ivf-ivf-pq) — hybrid (MadHybrid) vs HNSW/IVF/IVF-PQ on News 210K
 - [winnex-madhava-speed-gpu-vs-hnsw-ivf-ivf-pq-bigann](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-speed-gpu-vs-hnsw-ivf-ivf-pq-bigann) — speed mode (native C++, O(K) anchors) vs HNSW/IVF/IVF-PQ on BIGANN-100M
 
-### Speed benchmark (BIGANN-100M, v1.6.0)
+### Speed benchmark (BIGANN-100M, v1.6.0) — historical
+
+> **Historical note.** This v1.6.0 benchmark reports **efficiency vs the subset's
+> exact-scan ceiling** (not absolute recall vs the official GT, which the
+> corrected audit shows is unusable with the dataset's reordered base — see
+> [The benchmark reference](#the-benchmark-reference--a-corrected-honest-note)).
+> The relative efficiency claims (exact scan = 100%) remain valid; absolute
+> recall values should not be cited. See the
+> [Real benchmark](#real-benchmark--pip-installed-wheel-validated-reference-gpu-v172)
+> for current, valid numbers.
 
 The `winnex-madhava` speed mode — native C++ (OpenCL GPU default, OpenMP/AVX2
 on CPU), with **O(K) PiPrime anchor navigation** (sublinear, not brute force) —
@@ -656,7 +621,7 @@ compared against HNSW / IVF / IVF-PQ on the **BIGANN-100M** dataset (subset
 - **HNSW is faster in raw latency on CPU** (0.69 ms vs 24 ms) — expected:
   the speed mode does an exact scan (O(N·d)); HNSW is sublinear. **On GPU**,
   the QKᵀ matmul closes much of the gap — the fused kernel (v1.7.2) runs an
-  exact scan of 1M in 2.41 ms (see the [honest benchmark](#honest-benchmark--official-gt-pip-installed-wheel-gpu-v172)).
+  exact scan of 1M in 2.41 ms (see the [real benchmark](#real-benchmark--pip-installed-wheel-validated-reference-gpu-v172)).
 - **O(K) anchors**: with `nprobe=8`, the anchor navigation reaches **100%**
   of the ceiling (the anchors capture the true neighbors) while evaluating
   only the relevant cells. With `nprobe=4`, recall drops to 67% — the

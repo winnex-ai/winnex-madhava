@@ -1,0 +1,16 @@
+{
+  "id": "kleniopadilha/winnex-madhava-1-7-real-benchmark-vs-hnsw-ivf-pq",
+  "title": "winnex-madhava 1.7 real benchmark vs HNSW IVF PQ",
+  "code_file": "winnex_madhava_real_benchmark.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "model_strategy": "none",
+  "dataset_sources": [
+    "shurangwu/bigann-100m"
+  ],
+  "competition_sources": [],
+  "kernel_sources": []
+}
