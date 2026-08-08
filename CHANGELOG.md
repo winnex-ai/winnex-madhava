@@ -5,6 +5,22 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### ⚡ Speed GPU: topk paralelo (divide-and-conquer) + QKᵀ com tiling
+
+- **Topk paralelo**: substitui o insertion sort serial (1 work-group/query) por
+  `topk_local` (M work-groups por query, cada um varre um chunk de N) + `topk_merge`
+  (funde os top-k locais). O scan de N deixa de ser serial — M× mais paralelismo.
+- **QKᵀ com tiling**: 1 work-group por query, query carregada em local memory e
+  reutilizada (em vez de reler da memória global para cada vetor).
+- Corretude preservada: **recall exato 50/50** (o merge dos top-k locais é
+  matematicamente exato — nenhuma garantia do Madhava perdida).
+- Observação honesta: o gargalo real do batch é o matmul QKᵀ (memory-bound, lê o
+  corpus inteiro), não o topk. O roteamento O(K) por âncoras reduziria os bytes
+  lidos mas é aproximado (trade-off recall×velocidade) — mantido como modo
+  separado, não o default.
+
 ## [1.7.0] — 2026-08-07
 
 ### 🔊 OpenCL GPU backend (generic, vendor-neutral) + forced GPU
