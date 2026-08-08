@@ -280,6 +280,133 @@ __kernel void topk_merge(__global const float* scores, __global const int* local
         for (int j = 0; j < k; j++) idx[qi*k + j] = ti[j];
     }
 }
+
+// ===========================================================================
+// FUSED QK^T + topk (single pass, memory-bound otimizado) — v1.7.2
+// ===========================================================================
+// A correcao do gargalo do single-query: o kernel `qkt` usava 1 work-group por
+// query (1 SM ativo de 32 → ~3% da GPU) e materializava scores[N] na memoria
+// global (2x trafego). Este kernel:
+//
+//   1. PARALELIZA por chunk: M work-groups por query, cada um varre um chunk
+//      contiguo de N. Grid = nq*M work-groups → todos os SMs ativos mesmo com
+//      nq=1. (Mesmo padrao do topk_local — o scan de N vira N/M por grupo.)
+//
+//   2. ACESSO COALESCIDO: dentro do chunk, work-items adjacentes processam
+//      vetores CONSECUTIVOS (vi = start + lid, lid+lsz, ...). Como cada vetor
+//      e lido via corpus[vi*d + j], os work-items de uma warp leem enderecos
+//      adjacentes por j → cada carregamento de 32B da cache lida e usada por
+//      todos os itens da warp (coalescido).
+//
+//   3. FUSION: mantem o top-k local em local mem (k<=16) e escreve APENAS os
+//      k indices por chunk em `local_idx`. Nenhum scores[N] na memoria global.
+//      O topk_merge depois funde os M top-k locais → top-k global exato.
+//
+//   L2 correction e aplicada aqui (2*ip - ||v||^2) usando o buffer norms.
+//   Grid: nq*M work-groups x lsz itens. M>=1, k<=16.
+//
+//   Saida em local_idx (intercalada): [score0, idx0, score1, idx1, ...] por
+//   (query, chunk). O topk_merge usa os scores reais dos candidatos.
+__kernel void qkt_fused_topk(__global const float* q, __global const float* corpus,
+                             __global const float* norms, __global float* local_idx,
+                             int nq, int N, int d, int k, int M, int is_l2) {
+    int gid = get_group_id(0);
+    int qi = gid / M;           // query
+    int chunk = gid % M;        // chunk 0..M-1
+    if (qi >= nq) return;
+    int lid = get_local_id(0), lsz = get_local_size(0);
+
+    // Carrega a query em local memory (uma vez por grupo).
+    __local float lq[512];
+    for (int j = lid; j < d; j += lsz) lq[j] = q[qi*d + j];
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    // Chunk contiguo [start, end) — varredura coalescida.
+    int per = (N + M - 1) / M;
+    int start = chunk * per;
+    int end = min(start + per, N);
+
+    // Top-k local deste work-item (valores + indices).
+    float tv[16];
+    int ti[16];
+    for (int j = 0; j < k; j++) { tv[j] = -1e30f; ti[j] = -1; }
+
+    // Scan coalescido: itens adjacentes leem vetores adjacentes.
+    // (vi = start+lid, start+lid+lsz, ...) → warp acessa corpus contiguo.
+    for (int vi = start + lid; vi < end; vi += lsz) {
+        const __global float* v = corpus + (size_t)vi * d;
+        float ip = 0.0f;
+        for (int j = 0; j < d; j++) ip += lq[j] * v[j];
+        float s = is_l2 ? (2.0f * ip - norms[vi]) : ip;
+        // insertion sort no top-k local (k<=16)
+        for (int p = k - 1; p >= 0; p--) {
+            if (p == 0 || tv[p-1] >= s) {
+                if (tv[p] < s) { tv[p] = s; ti[p] = vi; }
+                break;
+            }
+            tv[p] = tv[p-1]; ti[p] = ti[p-1];
+        }
+    }
+
+    // Merge dos top-k dos work-items deste work-group → top-k do chunk.
+    __local float lv[256][16];
+    __local int li[256][16];
+    for (int j = 0; j < k; j++) { lv[lid][j] = tv[j]; li[lid][j] = ti[j]; }
+    barrier(CLK_LOCAL_MEM_FENCE);
+    if (lid == 0) {
+        float out_v[16]; int out_i[16];
+        for (int j = 0; j < k; j++) { out_v[j] = -1e30f; out_i[j] = -1; }
+        for (int w = 0; w < lsz; w++) {
+            for (int j = 0; j < k; j++) {
+                float s = lv[w][j]; if (s < -1e29f) continue;
+                for (int p = k - 1; p >= 0; p--) {
+                    if (p == 0 || out_v[p-1] >= s) {
+                        if (out_v[p] < s) { out_v[p] = s; out_i[p] = li[w][j]; }
+                        break;
+                    }
+                    out_v[p] = out_v[p-1]; out_i[p] = out_i[p-1];
+                }
+            }
+        }
+        // Intercala scores + indices: local_idx[(q,m,k')*2 + 0]=score, +1=idx
+        for (int j = 0; j < k; j++) {
+            size_t off = ((size_t)qi*M + chunk) * k * 2 + j * 2;
+            local_idx[off] = out_v[j];
+            local_idx[off + 1] = (float)out_i[j];
+        }
+    }
+}
+
+// Funde os top-k locais com SCORES (escritos pelo qkt_fused_topk).
+// local_idx e float intercalado [score0, idx0, ...]; nao relê scores[N].
+__kernel void topk_merge_scores(__global const float* local_idx, __global int* idx,
+                                int nq, int k, int M) {
+    int qi = get_group_id(0);
+    if (qi >= nq) return;
+    int lid = get_local_id(0), lsz = get_local_size(0);
+
+    __local float tv[16];
+    __local int ti[16];
+    if (lid == 0) {
+        for (int j = 0; j < k; j++) { tv[j] = -1e30f; ti[j] = -1; }
+        for (int m = 0; m < M; m++) {
+            for (int j = 0; j < k; j++) {
+                size_t off = ((size_t)qi*M + m) * k * 2 + j * 2;
+                float s = local_idx[off];
+                int cand = (int)local_idx[off + 1];
+                if (cand < 0) continue;
+                for (int p = k - 1; p >= 0; p--) {
+                    if (p == 0 || tv[p-1] >= s) {
+                        if (tv[p] < s) { tv[p] = s; ti[p] = cand; }
+                        break;
+                    }
+                    tv[p] = tv[p-1]; ti[p] = ti[p-1];
+                }
+            }
+        }
+        for (int j = 0; j < k; j++) idx[qi*k + j] = ti[j];
+    }
+}
 )";
 
 // Static OpenCL state (shared across all engine instances in this process).
@@ -287,9 +414,11 @@ cl_context g_ctx = nullptr;
 cl_command_queue g_queue = nullptr;
 cl_program g_prog = nullptr;
 cl_kernel g_kqkt = nullptr;
+cl_kernel g_kqkt_fused = nullptr;
 cl_kernel g_ktopk = nullptr;
 cl_kernel g_ktopk_local = nullptr;
 cl_kernel g_ktopk_merge = nullptr;
+cl_kernel g_ktopk_merge_scores = nullptr;
 cl_kernel g_kl2 = nullptr;
 cl_kernel g_knorm = nullptr;
 cl_mem g_corpus = nullptr;   // device copy of the corpus
@@ -367,12 +496,14 @@ void SpeedEngine::init_gpu_impl() {
         g_state = 0; return;
     }
     g_kqkt  = clCreateKernel(g_prog, "qkt", &err);
+    g_kqkt_fused = clCreateKernel(g_prog, "qkt_fused_topk", &err);
     g_ktopk_local = clCreateKernel(g_prog, "topk_local", &err);
     g_ktopk_merge = clCreateKernel(g_prog, "topk_merge", &err);
+    g_ktopk_merge_scores = clCreateKernel(g_prog, "topk_merge_scores", &err);
     g_ktopk = g_ktopk_local;  // alias para compatibilidade
     g_kl2   = clCreateKernel(g_prog, "l2_correct", &err);
     g_knorm = clCreateKernel(g_prog, "normalize_queries", &err);
-    if (!g_kqkt || !g_ktopk_local || !g_ktopk_merge || !g_kl2 || !g_knorm) { g_state = 0; return; }
+    if (!g_kqkt || !g_kqkt_fused || !g_ktopk_local || !g_ktopk_merge || !g_ktopk_merge_scores || !g_kl2 || !g_knorm) { g_state = 0; return; }
     g_state = 1;
 }
 
@@ -383,8 +514,10 @@ void SpeedEngine::free_gpu_impl() {
     if (g_sbuf) clReleaseMemObject(g_sbuf);
     if (g_idxbuf) clReleaseMemObject(g_idxbuf);
     if (g_kqkt) clReleaseKernel(g_kqkt);
+    if (g_kqkt_fused) clReleaseKernel(g_kqkt_fused);
     if (g_ktopk_local) clReleaseKernel(g_ktopk_local);
     if (g_ktopk_merge) clReleaseKernel(g_ktopk_merge);
+    if (g_ktopk_merge_scores) clReleaseKernel(g_ktopk_merge_scores);
     if (g_kl2) clReleaseKernel(g_kl2);
     if (g_knorm) clReleaseKernel(g_knorm);
     if (g_local_idx) clReleaseMemObject(g_local_idx);
@@ -392,7 +525,7 @@ void SpeedEngine::free_gpu_impl() {
     if (g_queue) clReleaseCommandQueue(g_queue);
     if (g_ctx) clReleaseContext(g_ctx);
     g_corpus = g_norms = g_qbuf = g_sbuf = g_idxbuf = g_local_idx = nullptr;
-    g_kqkt = g_ktopk_local = g_ktopk_merge = g_ktopk = nullptr;
+    g_kqkt = g_kqkt_fused = g_ktopk_local = g_ktopk_merge = g_ktopk = g_ktopk_merge_scores = nullptr;
     g_kl2 = g_knorm = nullptr;
     g_prog = nullptr; g_queue = nullptr; g_ctx = nullptr;
     g_state = -1;
@@ -447,9 +580,18 @@ void SpeedEngine::enable_gpu(const std::vector<float>& corpus, int n, int dim) {
     clEnqueueWriteBuffer(g_queue, g_corpus, CL_TRUE, 0,
                          (size_t)n * dim * sizeof(float), corpus.data(),
                          0, nullptr, nullptr);
-    if (!is_cosine_) {
-        g_norms = clCreateBuffer(g_ctx, CL_MEM_READ_ONLY,
-                                 (size_t)n * sizeof(float), nullptr, &err);
+    // g_norms SEMPRE criado (o kernel fusionado o referencia como arg mesmo em
+    // cosine; o valor e ignorado quando is_l2=0). Preenche com 1.0 em cosine
+    // (neutral — 2*ip - 1.0 nao e usado).
+    g_norms = clCreateBuffer(g_ctx, CL_MEM_READ_ONLY,
+                             (size_t)n * sizeof(float), nullptr, &err);
+    if (!cl_err(err, "create norms buffer")) { return; }
+    if (is_cosine_) {
+        std::vector<float> ones((size_t)n, 1.0f);
+        clEnqueueWriteBuffer(g_queue, g_norms, CL_TRUE, 0,
+                             (size_t)n * sizeof(float), ones.data(),
+                             0, nullptr, nullptr);
+    } else {
         clEnqueueWriteBuffer(g_queue, g_norms, CL_TRUE, 0,
                              (size_t)n * sizeof(float), norms_.data(),
                              0, nullptr, nullptr);
@@ -494,76 +636,64 @@ SpeedResult SpeedEngine::scores_gpu_topk(const float* queries, int nq, int k,
                                0, nullptr, nullptr);
     }
 
-    // QK^T matmul: 2D grid [nq, N].
-    size_t sneed = (size_t)nq * N * sizeof(float);
-    if (g_sbuf == nullptr || sneed > g_scap) {
-        if (g_sbuf) clReleaseMemObject(g_sbuf);
-        g_scap = sneed * 2;
-        g_sbuf = clCreateBuffer(g_ctx, CL_MEM_READ_WRITE, g_scap, nullptr, &err);
-    }
-    size_t g2[] = {(size_t)nq * 256}, l2[] = {256};
-    clSetKernelArg(g_kqkt, 0, sizeof(cl_mem), &g_qbuf);
-    clSetKernelArg(g_kqkt, 1, sizeof(cl_mem), &g_corpus);
-    clSetKernelArg(g_kqkt, 2, sizeof(cl_mem), &g_sbuf);
-    int q3 = nq, q4 = N, q5 = d;
-    clSetKernelArg(g_kqkt, 3, sizeof(int), &q3);
-    clSetKernelArg(g_kqkt, 4, sizeof(int), &q4);
-    clSetKernelArg(g_kqkt, 5, sizeof(int), &q5);
-    clEnqueueNDRangeKernel(g_queue, g_kqkt, 1, nullptr, g2, l2,
-                           0, nullptr, nullptr);
-
-    // L2 correction on device (only when metric is L2).
-    if (!is_cosine_) {
-        long long total = (long long)nq * N;
-        size_t gs[] = {(size_t)((total + 255) / 256) * 256};
-        clSetKernelArg(g_kl2, 0, sizeof(cl_mem), &g_sbuf);
-        clSetKernelArg(g_kl2, 1, sizeof(cl_mem), &g_norms);
-        int l2 = nq, l3 = N;
-        clSetKernelArg(g_kl2, 2, sizeof(int), &l2);
-        clSetKernelArg(g_kl2, 3, sizeof(int), &l3);
-        clEnqueueNDRangeKernel(g_queue, g_kl2, 1, nullptr, gs, nullptr,
-                               0, nullptr, nullptr);
-    }
-
-    // Per-row topk PARALELO: topk_local (M work-groups/query, scan de N/M)
-    // + topk_merge (funde os top-k locais). O scan de N deixa de ser serial.
+    // --- FUSED QK^T + topk (v1.7.2): 1 kernel, sem scores[N] materializado. ---
+    // M work-groups por query paralelizam o scan (todos os SMs ativos mesmo com
+    // nq=1). Cada grupo varre um chunk contiguo de N e mantém top-k local.
+    // O topk_merge depois funde os M top-k por query → top-k global exato.
     size_t ineed = (size_t)nq * k * sizeof(int);
     if (g_idxbuf == nullptr || ineed > g_idxcap) {
         if (g_idxbuf) clReleaseMemObject(g_idxbuf);
         g_idxcap = ineed * 2;
         g_idxbuf = clCreateBuffer(g_ctx, CL_MEM_WRITE_ONLY, g_idxcap, nullptr, &err);
     }
-    int M_topk = 4;  // work-groups por query (paralelismo do scan do topk)
-    if (M_topk > N) M_topk = N;
-    size_t lneed = (size_t)nq * M_topk * k * sizeof(int);
+
+    // M: work-groups por query. Escolhe um M que cubra os SMs da GPU (32+),
+    // mas limitado para chunks nao vazios. Para nq pequeno, M alto ativa
+    // todos os SMs; para batch grande, o paralelismo entre queries domina.
+    int M = 64;
+    if ((size_t)M * nq > 4096) M = 4096 / nq;   // cap no grid total
+    if (M > N) M = N;
+    if (M < 1) M = 1;
+    // Ajusta M para que cada chunk tenha >= lsz itens (evita idle em chunks
+    // pequenos no single-query com N pequeno).
+    int lsz = 256;
+    if (N < lsz) lsz = N;
+    if (N < (int)((size_t)lsz * M)) M = (N + lsz - 1) / lsz;
+    if (M < 1) M = 1;
+
+    size_t lneed = (size_t)nq * M * k * 2 * sizeof(float);  // intercala score+idx
     if (g_local_idx == nullptr || lneed > g_localcap) {
         if (g_local_idx) clReleaseMemObject(g_local_idx);
         g_localcap = lneed * 2;
         g_local_idx = clCreateBuffer(g_ctx, CL_MEM_READ_WRITE, g_localcap, nullptr, &err);
     }
 
-    // topk_local: grid nq*M work-groups × 256.
-    size_t gL[] = {(size_t)nq * M_topk * 256}, lL[] = {256};
-    clSetKernelArg(g_ktopk_local, 0, sizeof(cl_mem), &g_sbuf);
-    clSetKernelArg(g_ktopk_local, 1, sizeof(cl_mem), &g_local_idx);
-    int a2 = nq, a3 = N, a4 = k, a5 = M_topk;
-    clSetKernelArg(g_ktopk_local, 2, sizeof(int), &a2);
-    clSetKernelArg(g_ktopk_local, 3, sizeof(int), &a3);
-    clSetKernelArg(g_ktopk_local, 4, sizeof(int), &a4);
-    clSetKernelArg(g_ktopk_local, 5, sizeof(int), &a5);
-    clEnqueueNDRangeKernel(g_queue, g_ktopk_local, 1, nullptr, gL, lL, 0, nullptr, nullptr);
+    // qkt_fused_topk: grid nq*M work-groups x lsz itens.
+    size_t gF[] = {(size_t)nq * M * lsz}, lF[] = {(size_t)lsz};
+    clSetKernelArg(g_kqkt_fused, 0, sizeof(cl_mem), &g_qbuf);
+    clSetKernelArg(g_kqkt_fused, 1, sizeof(cl_mem), &g_corpus);
+    clSetKernelArg(g_kqkt_fused, 2, sizeof(cl_mem), &g_norms);   // usado so p/ L2
+    clSetKernelArg(g_kqkt_fused, 3, sizeof(cl_mem), &g_local_idx);
+    int f2 = nq, f3 = N, f4 = d, f5 = k, f6 = M;
+    int f7 = is_cosine_ ? 0 : 1;
+    clSetKernelArg(g_kqkt_fused, 4, sizeof(int), &f2);
+    clSetKernelArg(g_kqkt_fused, 5, sizeof(int), &f3);
+    clSetKernelArg(g_kqkt_fused, 6, sizeof(int), &f4);
+    clSetKernelArg(g_kqkt_fused, 7, sizeof(int), &f5);
+    clSetKernelArg(g_kqkt_fused, 8, sizeof(int), &f6);
+    clSetKernelArg(g_kqkt_fused, 9, sizeof(int), &f7);
+    clEnqueueNDRangeKernel(g_queue, g_kqkt_fused, 1, nullptr, gF, lF, 0, nullptr, nullptr);
 
-    // topk_merge: grid nq work-groups × 256.
-    size_t gM[] = {(size_t)nq * 256};
-    clSetKernelArg(g_ktopk_merge, 0, sizeof(cl_mem), &g_sbuf);
-    clSetKernelArg(g_ktopk_merge, 1, sizeof(cl_mem), &g_local_idx);
-    clSetKernelArg(g_ktopk_merge, 2, sizeof(cl_mem), &g_idxbuf);
-    int b2 = nq, b3 = N, b4 = k, b5 = M_topk;
-    clSetKernelArg(g_ktopk_merge, 3, sizeof(int), &b2);
-    clSetKernelArg(g_ktopk_merge, 4, sizeof(int), &b3);
-    clSetKernelArg(g_ktopk_merge, 5, sizeof(int), &b4);
-    clSetKernelArg(g_ktopk_merge, 6, sizeof(int), &b5);
-    clEnqueueNDRangeKernel(g_queue, g_ktopk_merge, 1, nullptr, gM, lL, 0, nullptr, nullptr);
+    // topk_merge_scores: funde os M top-k por query usando os scores
+    // intercalados no local_idx (sem reler scores[N]).
+    size_t gM2[] = {(size_t)nq * lsz};
+    clSetKernelArg(g_ktopk_merge_scores, 0, sizeof(cl_mem), &g_local_idx);
+    clSetKernelArg(g_ktopk_merge_scores, 1, sizeof(cl_mem), &g_idxbuf);
+    int b2 = nq, b3 = k, b4 = M;
+    clSetKernelArg(g_ktopk_merge_scores, 2, sizeof(int), &b2);
+    clSetKernelArg(g_ktopk_merge_scores, 3, sizeof(int), &b3);
+    clSetKernelArg(g_ktopk_merge_scores, 4, sizeof(int), &b4);
+    clEnqueueNDRangeKernel(g_queue, g_ktopk_merge_scores, 1, nullptr, gM2, lF, 0, nullptr, nullptr);
 
     // Copy back only the nq·k indices.
     out_indices.resize((size_t)nq * k);

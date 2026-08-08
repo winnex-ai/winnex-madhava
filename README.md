@@ -156,16 +156,20 @@ build**.
 
 Be honest — `winnex-madhava` is **not** the right tool for:
 
-- **Lowest-latency serving (sub-ms QPS).** HNSW/IVF are 100–1000× faster per
-  query. If you need millions of queries/sec, use an approximate index.
+- **Lowest-latency serving (sub-ms QPS).** HNSW/IVF are faster per query — but
+  they are **approximate** (no guarantee). The exact scan is `speed=True` on
+  GPU (~2.4 ms at 1M, single-query) or the bound engine on CPU (~11.7 ms). If
+  you need millions of queries/sec *and* can tolerate approximation, use an
+  approximate index.
 - **`default` mode with arbitrary float32 corpora.** The `default` engine
   input contract is **uint8** (0–255). If you pass raw float embeddings to
   `default` mode, they get truncated to uint8 and recall collapses. For
-  float32 embeddings, use **`hybrid=True`** (the MadHybrid path), which
-  accepts float32 directly.
+  float32 embeddings, use **`hybrid=True`** (the MadHybrid path) or
+  **`speed=True`** (the exact GPU scan), which accept float32 directly.
 - **Tiny / low-dimensional corpora** (d < ~8). The projection overhead
   dominates; a plain `search_exact` scan is faster and simpler.
-- **GPU inference.** This is CPU-only.
+- **GPU inference for other models.** The speed-mode GPU path (OpenCL) is
+  dedicated to vector search; it is not a general inference backend.
 
 ## Parameter guide
 
@@ -252,7 +256,7 @@ recall; on uniform data, prefer `default` mode.
 
 | Parameter | Default | Effect |
 |---|---|---|
-| `speed` | `False` | `True` → native speed mode (C++ QKᵀ matmul; cuBLAS on GPU, OpenMP/AVX2 on CPU) |
+| `speed` | `False` | `True` → native speed mode (C++ QKᵀ matmul + fused topk; OpenCL GPU default, CUDA opt-in, OpenMP/AVX2 on CPU) |
 | `speed_n_anchors` | `0` | K PiPrime anchors for **O(K) navigation**. `>=2` → sublinear (route query to the nprobe most-similar anchor cells); `0` → brute-force exact scan |
 | `speed_nprobe` | `4` | Anchor cells probed per query. Higher = better recall, more latency |
 
@@ -287,9 +291,33 @@ scan.
   `nprobe=8` reaches 100% of the exact-scan ceiling; `nprobe=4` may drop
   recall. Tune on your data.
 - The CPU speed mode is an **exact scan** (O(N·d)) — HNSW is faster on raw
-  CPU latency. The value is **exactness + build speed + determinism**. On
-  **GPU** (cuBLAS), the QKᵀ matmul is ~100× faster and competes directly
-  with HNSW on latency.
+  CPU latency. The value is **exactness + build speed + determinism**.
+
+### Speed GPU — how the fused kernel works (v1.7.2)
+
+The GPU path (OpenCL) runs the QKᵀ matmul as a **single fused kernel**
+(`qkt_fused_topk`) that also computes the per-row top-k — no intermediate
+`scores[N]` matrix is materialized. Two properties matter for latency:
+
+- **Parallelism (`M` work-groups per query).** The kernel splits the corpus
+  scan into `M` contiguous chunks, each handled by a separate work-group. This
+  keeps **all GPU compute units active even for a single query** — the reason
+  single-query latency dropped from **47.8ms → 2.41ms (20×)** at 1M. `M` is
+  auto-tuned from the GPU size (64 by default), so no parameter to set.
+- **Coalesced memory access.** Adjacent work-items read adjacent vectors, so
+  each 32-byte cache line fetched from global memory is used by an entire warp.
+  This is what makes the scan memory-bound at ~448 GB/s instead of ~2%.
+
+| Query mode | GPU (OpenCL) 1M | CPU 1M | Notes |
+|---|---|---|---|
+| single-query | **2.41 ms** | 9.56 ms | GPU 4× faster |
+| batch (100 q) | **1.55 ms/q** | ~9 ms/q | GPU 6× faster |
+
+**Latency guidance.** Use `speed=True` with `metric="l2"` (or `"cosine"`) for
+an **exact scan** on GPU — the fastest correct path per query. For **throughput
+(batch)**, `search_batch` amortizes the kernel launch; at 1M it sustains
+~600-640 QPS. If you need sub-millisecond latency on CPU, use `hybrid=True`
+(approximate, recall tunable via `nprobe`) — see the honest comparison below.
 
 ## Streaming — 100M vectors without loading the corpus into RAM
 
@@ -363,9 +391,10 @@ corpus is **never** loaded into RAM. **0 bound violations** at every scale.
 Build an engine over a `(n, dim)` array. With `hybrid=False` (default) the
 corpus is uint8 and the native C++ `MadhavaL2` is returned. With
 `hybrid=True` a `MadHybrid` wrapper is returned (float32 or uint8). With
-`speed=True` a `MadhavaSpeed` is returned — the native QKᵀ matmul engine
-(cuBLAS on GPU, OpenMP/AVX2 on CPU), optionally with O(K) anchor navigation
-via `speed_n_anchors`/`speed_nprobe`. See [Parameter guide](#parameter-guide).
+`speed=True` a `MadhavaSpeed` is returned — the native QKᵀ matmul engine with
+**fused topk** (OpenCL GPU default, CUDA opt-in at build, OpenMP/AVX2 on CPU),
+optionally with O(K) anchor navigation via `speed_n_anchors`/`speed_nprobe`.
+See [Parameter guide](#parameter-guide).
 
 ### `engine.search(query: np.ndarray) -> SearchResult`
 
@@ -502,6 +531,43 @@ same robust recall function:
 
 [![Kaggle](https://img.shields.io/badge/Kaggle-pip--200--queries-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-200-queries)
 
+### Honest benchmark — official GT, pip-installed wheel, GPU (v1.7.2)
+
+The **honest** benchmark: installs `winnex-madhava` **from PyPI via pip**, reads
+the **official BIGANN-100M L2 ground truth**, and measures every mode against
+it — with recall normalized by GT coverage in the subset, the exact-scan
+ceiling as the physical limit, and the OpenCL GPU backend reported truthfully
+(an **exact scan**, *not* sublinear — no anchors are active on the GPU path).
+
+[![Kaggle](https://img.shields.io/badge/Kaggle-Honest%20GPU%20vs%20Official%20GT-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-honest-gpu-vs-official-gt)
+
+**Results (BIGANN-100M, subset 1M, 100 queries, official GT):**
+
+| Method | R@10 | Lat (ms) | QPS | Build (s) | Efficiency | Bound vio. |
+|---|---|---|---|---|---|---|
+| Exact-scan ceiling (`search_exact`) | 0.9500 | 9.3 | 108 | 0.40 | — | — |
+| **Madhava bound (int8 5%/1%)** | **0.9500** | 11.7 | 86 | **0.40** | **100%** | **0** |
+| **Madhava bound (int8 100%/100%)** | **0.9500** | 23.6 | 42 | 0.40 | **100%** | **0** |
+| **Madhava speed GPU (OpenCL, fused v1.7.2)** | **0.9500** | **2.41** | **415** | 0.29 | **100%** | — |
+| Speed GPU **batch** (100 q) | **0.9500** | 1.55 | 644 | — | **100%** | — |
+| Madhava speed CPU | 0.9500 | 9.56 | 105 | — | 100% | — |
+
+*GPU = NVIDIA RTX 5060 Ti (local). The Kaggle run (P100, v1.7.1) reported the
+same R@10=0.95 and 100% efficiency; the local v1.7.2 numbers above include the
+**fused QKᵀ+topk** optimization (single-query GPU **20× faster**: 47.8ms →
+2.41ms).*
+
+**Read the honest insight**: the bound engine reaches **100% of the exact-scan
+ceiling** with 0 bound violations; the aggressive 5%/1% pruning costs
+**zero recall** vs the 100% config. The speed GPU (OpenCL, verified
+`backend="gpu"`) is an **exact scan** — now **4× faster than the CPU** in
+single-query (2.41ms vs 9.56ms) and 3.7× faster in batch (1.55ms vs ~9ms), with
+batch recall identical to single-query. The R@10 of 0.95 is the subset's
+physical ceiling given GT coverage (~0.6% in the 1M prefix of the 100M GT) —
+**no method can score higher on this subset**, and `winnex-madhava` reaches
+100% of it. See [Speed GPU tuning](#choosing-speed--speed_n_anchors--speed_nprobe)
+for how to configure the speed mode and why single-query is now fast.
+
 ### Hybrid benchmark (News 210K, v1.3.0)
 
 The `winnex-madhava` hybrid mode (MadHybrid) benchmark — same engine,
@@ -529,6 +595,7 @@ results. The `winnex-madhava` hybrid mode reaches the same NDCG@10 as the
 exact FlatIP baseline while running 4× faster per query.
 
 Related public benchmarks:
+- [winnex-madhava-1-7-honest-gpu-vs-official-gt](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-honest-gpu-vs-official-gt) — **honest**: pip-installed wheel, official GT, normalized recall, GPU truthfully reported
 - [winnex-madhava-pip-200-queries](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-200-queries) — official L2 GT, 200 queries, 10M/100M
 - [winnex-madhava-faiss-benchmark](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-faiss-benchmark) — side-by-side with FAISS HNSW/IVF/IVF-PQ
 - [winnex-madhava-hybrid-vs-hnsw-ivf-ivf-pq](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-hybrid-vs-hnsw-ivf-ivf-pq) — hybrid (MadHybrid) vs HNSW/IVF/IVF-PQ on News 210K
@@ -536,8 +603,8 @@ Related public benchmarks:
 
 ### Speed benchmark (BIGANN-100M, v1.6.0)
 
-The `winnex-madhava` speed mode — native C++ (cuBLAS on GPU, OpenMP/AVX2 on
-CPU), with **O(K) PiPrime anchor navigation** (sublinear, not brute force) —
+The `winnex-madhava` speed mode — native C++ (OpenCL GPU default, OpenMP/AVX2
+on CPU), with **O(K) PiPrime anchor navigation** (sublinear, not brute force) —
 compared against HNSW / IVF / IVF-PQ on the **BIGANN-100M** dataset (subset
 1M, 30 queries, official L2 ground truth):
 
@@ -561,7 +628,8 @@ compared against HNSW / IVF / IVF-PQ on the **BIGANN-100M** dataset (subset
   exact-scan ceiling — the speed mode reaches **100%** (it is exact).
 - **HNSW is faster in raw latency on CPU** (0.69 ms vs 24 ms) — expected:
   the speed mode does an exact scan (O(N·d)); HNSW is sublinear. **On GPU**,
-  the QKᵀ matmul would be ~100× faster, closing the gap.
+  the QKᵀ matmul closes much of the gap — the fused kernel (v1.7.2) runs an
+  exact scan of 1M in 2.41 ms (see the [honest benchmark](#honest-benchmark--official-gt-pip-installed-wheel-gpu-v172)).
 - **O(K) anchors**: with `nprobe=8`, the anchor navigation reaches **100%**
   of the ceiling (the anchors capture the true neighbors) while evaluating
   only the relevant cells. With `nprobe=4`, recall drops to 67% — the
@@ -639,11 +707,13 @@ everywhere but HNSW beats it on raw CPU latency (sub-linear vs linear). The
 to the relevant cells (sub-linear in data touched), with a recall cost that
 depends on `nprobe`.
 
-The **GPU** path (cuBLAS QKᵀ) is written (`src/speed_gpu.cu`) and compiled
-automatically by CMake when a CUDA toolkit is present
-(`CMAKE_CUDA_ARCHITECTURES` should cover your GPU, e.g. `60` for P100,
-`120` for RTX 50xx). Without a CUDA toolkit, the CPU backend is used. There
-is no persistence/serialize API yet — rebuild per process.
+The **GPU** path is a **fused QKᵀ+topk** kernel. The default backend is
+**OpenCL** (`src/speed_opencl.cpp`) — vendor-neutral, JIT-compiled, no nvcc
+required — with a **CUDA opt-in** (`src/speed_gpu.cu`, built via
+`-DMADHAVA_USE_CUDA=ON`). The GPU is enabled automatically when an OpenCL
+loader + device is present, else it falls back to CPU (see `require_gpu=True`
+to force a hard error instead). There is no persistence/serialize API yet —
+rebuild per process.
 
 ### O(K) anchor recall depends on `nprobe`
 
@@ -658,7 +728,8 @@ We are explicit about where winnex-madhava **does not** win:
 
 | Use case | Best tool | Why |
 |---|---|---|
-| Lowest latency (sub-ms) | HNSW | HNSW ≈ 0.45 ms vs madhava ≈ 2.7 ms at 50K×1536D |
+| Lowest latency (sub-ms) | HNSW | HNSW ≈ 0.45 ms vs madhava bound ≈ 2.7 ms at 50K×1536D (approximate vs exact) |
+| Exact scan, low latency | **winnex-madhava speed GPU** | Fused QKᵀ+topk: 2.41 ms at 1M single-query — the fastest exact path |
 | **Provable completeness** | **winnex-madhava** | Only engine with 0 bound violations + per-doc proof |
 | Frequent index rebuilds | **winnex-madhava** | Build ≈ 1 s (10M) vs HNSW ≈ 1025 s |
 | Regulated / auditable retrieval | **winnex-madhava** | Deterministic, per-document audit trail |

@@ -5,6 +5,35 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.2] — 2026-08-08
+
+### ⚡ Speed GPU: fused QKᵀ+topk — single-query 20× mais rápido
+
+Corrige o gargalo mais significativo do speed mode GPU: o single-query era mais
+lento que o CPU (47.8ms vs 9.2ms no 1M). O kernel `qkt` original usava **1
+work-group por query** (1 SM ativo de 32 → ~3% da GPU), **acesso não-coalescido**
+(512B/item) e **materializava scores[N]** (2× tráfego de memória).
+
+**Novo kernel `qkt_fused_topk`** (ver `docs/OTIMIZACAO_GPU_SINGLE_QUERY.md`):
+- **M work-groups por query** (M=64) → todos os SMs ativos mesmo com nq=1.
+- **Acesso coalescido**: work-items adjacentes leem vetores adjacentes do corpus.
+- **Fusão QKᵀ+topk**: top-k local em registrador/local mem, sem `scores[N]`.
+- **L2 correction aplicada no fused** — 4 kernels/query → 2.
+- `topk_merge_scores` funde os M top-k locais → top-k global exato.
+
+**Resultado (RTX 5060 Ti, 1M, L2, 100 queries):**
+
+| N | Antes | Depois | Speedup |
+|---|---|---|---|
+| 100K | 5.05 ms | 0.53 ms | 9.5× |
+| 500K | 24.05 ms | 1.39 ms | 17.3× |
+| 1M | 47.77 ms | **2.40 ms** | **19.9×** |
+
+- GPU vs CPU single-query (1M): **3.97× mais rápido** (antes 5× mais lento).
+- Batch (1M): ~1.5-1.9 ms/query, ~600-640 QPS (estável).
+- **Corretude preservada**: 20/20 L2 + 20/20 cosine vs brute-force numpy;
+  100/100 queries uint8 vs scan exato; batch == single-query.
+
 ## [1.7.1] — 2026-08-07
 
 ### ⚡ Speed GPU: topk paralelo (divide-and-conquer) + QKᵀ com tiling
