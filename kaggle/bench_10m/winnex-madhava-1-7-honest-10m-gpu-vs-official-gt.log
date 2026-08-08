@@ -1,0 +1,95 @@
+[{"stream_name":"stderr","time":10.367756029,"data":"/usr/local/lib/python3.12/dist-packages/nbformat/__init__.py:96: MissingIDFieldWarning: Cell is missing an id field, this will become a hard error in future nbformat versions. You may want to use `normalize()` on your notebooks before validations (available since nbformat 5.1.4). Previous versions of nbformat are fixing this issue transparently, and will stop doing so in the future.\n"}
+,{"stream_name":"stderr","time":10.367827633,"data":"  validate(nb)\n"}
+,{"stream_name":"stderr","time":11.66028023,"data":"0.00s - Debugger warning: It seems that frozen modules are being used, which may\n"}
+,{"stream_name":"stderr","time":11.6603133,"data":"0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off\n"}
+,{"stream_name":"stderr","time":11.660338366,"data":"0.00s - to python to disable frozen modules.\n"}
+,{"stream_name":"stderr","time":11.660342675,"data":"0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.\n"}
+,{"stream_name":"stderr","time":12.431297785,"data":"0.00s - Debugger warning: It seems that frozen modules are being used, which may\n"}
+,{"stream_name":"stderr","time":12.431330057,"data":"0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off\n"}
+,{"stream_name":"stderr","time":12.431335324,"data":"0.00s - to python to disable frozen modules.\n"}
+,{"stream_name":"stderr","time":12.431339222,"data":"0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.\n"}
+,{"stream_name":"stdout","time":17.253692304,"data":"     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 42.9/42.9 kB 1.9 MB/s eta 0:00:00\n"}
+,{"stream_name":"stdout","time":17.327658468,"data":"   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 613.1/613.1 kB 21.1 MB/s eta 0:00:00\n"}
+,{"stream_name":"stdout","time":17.455952046,"data":"     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 42.9/42.9 kB 1.9 MB/s eta 0:00:00\n"}
+,{"stream_name":"stdout","time":17.455975237,"data":"   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 613.1/613.1 kB 21.1 MB/s eta 0:00:00\n"}
+,{"stream_name":"stdout","time":22.47238655,"data":"installed winnex-madhava\n"}
+,{"stream_name":"stdout","time":22.485117731,"data":"libOpenCL present: True\n"}
+,{"stream_name":"stdout","time":22.50050584,"data":"winnex_madhava 1.7.2\n"}
+,{"stream_name":"stdout","time":22.500524805,"data":"CPU threads: 4\n"}
+,{"stream_name":"stdout","time":22.51967081,"data":"base : /kaggle/input/datasets/shurangwu/bigann-100m/base.u8bin\n"}
+,{"stream_name":"stdout","time":22.519693389,"data":"queries: /kaggle/input/datasets/shurangwu/bigann-100m/unif_query_10k.u8bin\n"}
+,{"stream_name":"stdout","time":22.519698828,"data":"gt   : /kaggle/input/datasets/shurangwu/bigann-100m/unif_groundtruth_10k.bin\n"}
+,{"stream_name":"stdout","time":22.519702747,"data":"BIGANN dataset found: True\n"}
+,{"stream_name":"stdout","time":22.599068111,"data":"Queries: (100, 128), GT: (100, 100)\n"}
+,{"stream_name":"stdout","time":22.616609831,"data":"Cobertura GT top-10 no subset 10,000,000: 0.082\n"}
+,{"stream_name":"stdout","time":22.616644293,"data":"=\u003e recall bruto vs GT oficial limitado a ~8% mesmo para scan exato.\n"}
+,{"stream_name":"stdout","time":105.04963701,"data":"Teto real (search_exact): R@10=0.4400 | lat=554.16ms | build=26.79s\n"}
+,{"stream_name":"stdout","time":105.049677316,"data":"=\u003e este é o limite físico: nenhum método pode superá-lo no subset.\n"}
+,{"stream_name":"stdout","time":185.119801687,"data":"Bound 5%/1%:  R@10=0.4400 | lat=490.97ms | build=14.61s | vio=0 | eff=100.0%\n"}
+,{"stream_name":"stdout","time":283.279166978,"data":"Bound 100%:  R@10=0.4400 | lat=998.04ms | build=14.37s | eff=100.0%\n"}
+,{"stream_name":"stdout","time":283.279211511,"data":"=\u003e custo de recall da poda 5%/1% vs 100%: +0.0000\n"}
+,{"stream_name":"stderr","time":291.319565847,"data":"[Winnex Madhava] SpeedEngine: GPU backend enabled (OpenCL QK^T + device topk, JIT-compiled kernels).\n"}
+,{"stream_name":"stderr","time":291.866411537,"data":"[Winnex Madhava] SpeedEngine: GPU backend enabled (OpenCL QK^T + device topk, JIT-compiled kernels).\n"}
+,{"stream_name":"stderr","time":291.866449366,"data":"\n"}
+,{"stream_name":"stderr","time":291.866455423,"data":"[Winnex Madhava] SpeedEngine: GPU backend enabled (OpenCL QK^T + device topk, JIT-compiled kernels).\n"}
+,{"stream_name":"stdout","time":292.134352207,"data":"backend=gpu | has_gpu=True | reason=''\n"}
+,{"stream_name":"stdout","time":295.179658676,"data":"Speed GPU:  R@10=0.4400 | lat=38.14ms | build=6.72s | eff=100.0%\n"}
+,{"stream_name":"stdout","time":295.179717913,"data":"=\u003e exact scan: deve atingir 100% do teto (todos os vizinhos).\n"}
+,{"stream_name":"stdout","time":298.038940482,"data":"Batch 100 queries: 2258.8ms total | 22.588ms/query | 44.3 QPS\n"}
+,{"stream_name":"stdout","time":298.038976668,"data":"Batch R@10 = 0.4400 (vs single 0.4400)\n"}
+,{"stream_name":"stdout","time":298.039706663,"data":"Batch == single-query (top-1 dos 10 primeiros): True\n"}
+,{"stream_name":"stdout","time":298.055180517,"data":"{\n"}
+,{"stream_name":"stdout","time":298.055200003,"data":"  \"package\": \"winnex-madhava\",\n"}
+,{"stream_name":"stdout","time":298.055205896,"data":"  \"version\": \"1.7.2\",\n"}
+,{"stream_name":"stdout","time":298.055210463,"data":"  \"methodology\": \"RECALL vs GT OFICIAL BIGANN-100M L2 (alinhamento direto), recall normalizado por cobertura do subset; teto = search_exact L2 no subset (limite fisico); speed GPU = exact scan QK^T, nao sublinear (honestidade).\",\n"}
+,{"stream_name":"stdout","time":298.055216904,"data":"  \"reference\": \"GT OFICIAL BIGANN-100M (nao ceiling artificial)\",\n"}
+,{"stream_name":"stdout","time":298.055222035,"data":"  \"N_subset\": 10000000,\n"}
+,{"stream_name":"stdout","time":298.05522666,"data":"  \"NQ\": 100,\n"}
+,{"stream_name":"stdout","time":298.055230934,"data":"  \"dim\": 128,\n"}
+,{"stream_name":"stdout","time":298.055235145,"data":"  \"k\": 10,\n"}
+,{"stream_name":"stdout","time":298.055239565,"data":"  \"gt_coverage_topk\": 0.08199999999999999,\n"}
+,{"stream_name":"stdout","time":298.055243982,"data":"  \"ceiling_search_exact\": {\n"}
+,{"stream_name":"stdout","time":298.055248549,"data":"    \"recall_at_10\": 0.44,\n"}
+,{"stream_name":"stdout","time":298.055253152,"data":"    \"latency_ms\": 554.162712097168,\n"}
+,{"stream_name":"stdout","time":298.055257816,"data":"    \"build_s\": 26.785158395767212\n"}
+,{"stream_name":"stdout","time":298.055262288,"data":"  },\n"}
+,{"stream_name":"stdout","time":298.055266597,"data":"  \"methods\": [\n"}
+,{"stream_name":"stdout","time":298.055271017,"data":"    {\n"}
+,{"stream_name":"stdout","time":298.055275511,"data":"      \"method\": \"MadhavaL2 bound (int8 5%/1%)\",\n"}
+,{"stream_name":"stdout","time":298.055280364,"data":"      \"recall_at_10\": 0.44,\n"}
+,{"stream_name":"stdout","time":298.055284964,"data":"      \"latency_ms\": 490.97108364105225,\n"}
+,{"stream_name":"stdout","time":298.055289487,"data":"      \"build_s\": 14.606896162033081,\n"}
+,{"stream_name":"stdout","time":298.055294495,"data":"      \"efficiency_pct\": 100.0,\n"}
+,{"stream_name":"stdout","time":298.055308584,"data":"      \"bound_violations\": 0\n"}
+,{"stream_name":"stdout","time":298.055312226,"data":"    },\n"}
+,{"stream_name":"stdout","time":298.055315392,"data":"    {\n"}
+,{"stream_name":"stdout","time":298.055318421,"data":"      \"method\": \"MadhavaL2 bound (int8 100%/100%)\",\n"}
+,{"stream_name":"stdout","time":298.055321724,"data":"      \"recall_at_10\": 0.44,\n"}
+,{"stream_name":"stdout","time":298.055324979,"data":"      \"latency_ms\": 998.0425786972046,\n"}
+,{"stream_name":"stdout","time":298.055328449,"data":"      \"build_s\": 14.37151575088501,\n"}
+,{"stream_name":"stdout","time":298.055331829,"data":"      \"efficiency_pct\": 100.0\n"}
+,{"stream_name":"stdout","time":298.055335018,"data":"    },\n"}
+,{"stream_name":"stdout","time":298.05533808,"data":"    {\n"}
+,{"stream_name":"stdout","time":298.055341152,"data":"      \"method\": \"Madhava speed GPU (OpenCL exact scan)\",\n"}
+,{"stream_name":"stdout","time":298.055344547,"data":"      \"recall_at_10\": 0.44,\n"}
+,{"stream_name":"stdout","time":298.055347894,"data":"      \"latency_ms\": 38.14427137374878,\n"}
+,{"stream_name":"stdout","time":298.05535129,"data":"      \"build_s\": 6.715590715408325,\n"}
+,{"stream_name":"stdout","time":298.055355181,"data":"      \"efficiency_pct\": 100.0,\n"}
+,{"stream_name":"stdout","time":298.055358862,"data":"      \"backend\": \"gpu\",\n"}
+,{"stream_name":"stdout","time":298.055362684,"data":"      \"has_gpu\": true,\n"}
+,{"stream_name":"stdout","time":298.055366477,"data":"      \"batch_ms_per_query\": 22.58829355239868,\n"}
+,{"stream_name":"stdout","time":298.05536983,"data":"      \"batch_recall_at_10\": 0.44,\n"}
+,{"stream_name":"stdout","time":298.05537313,"data":"      \"honesty_note\": \"exact scan QK^T full corpus; NOT sublinear\"\n"}
+,{"stream_name":"stdout","time":298.055376792,"data":"    }\n"}
+,{"stream_name":"stdout","time":298.055380012,"data":"  ]\n"}
+,{"stream_name":"stdout","time":298.055383102,"data":"}\n"}
+,{"stream_name":"stdout","time":298.055386151,"data":"report saved to /kaggle/working/report.json\n"}
+,{"stream_name":"stderr","time":300.922101943,"data":"/usr/local/lib/python3.12/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\\|'\n"}
+,{"stream_name":"stderr","time":300.922133303,"data":"  cells[i][c] = re.sub('\\\\\\\\\\|', '|', cell)\n"}
+,{"stream_name":"stderr","time":301.109226877,"data":"/usr/local/lib/python3.12/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\\_'\n"}
+,{"stream_name":"stderr","time":301.109254039,"data":"  text = re.sub(r'_', '\\_', text) # Escape underscores in display text\n"}
+,{"stream_name":"stderr","time":301.740282649,"data":"[NbConvertApp] Converting notebook __notebook__.ipynb to notebook\n"}
+,{"stream_name":"stderr","time":302.06913852,"data":"[NbConvertApp] Writing 27735 bytes to __notebook__.ipynb\n"}
+,{"stream_name":"stderr","time":304.3899268,"data":"[NbConvertApp] Converting notebook __notebook__.ipynb to html\n"}
+,{"stream_name":"stderr","time":305.245005824,"data":"[NbConvertApp] Writing 342981 bytes to __results__.html\n"}
+]

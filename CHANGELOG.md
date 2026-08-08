@@ -34,6 +34,24 @@ work-group por query** (1 SM ativo de 32 → ~3% da GPU), **acesso não-coalesci
 - **Corretude preservada**: 20/20 L2 + 20/20 cosine vs brute-force numpy;
   100/100 queries uint8 vs scan exato; batch == single-query.
 
+### 📊 Benchmark honesto 10M (Kaggle, P100)
+
+Novo notebook público:
+[winnex-madhava-1-7-honest-10m-gpu-vs-official-gt](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-honest-10m-gpu-vs-official-gt)
+— subset **10M** do BIGANN-100M, 100 queries, GT oficial, recall normalizado
+por cobertura (~8% no 10M).
+
+| Método | R@10 | Lat (ms) | Eficiência |
+|---|---|---|---|
+| Teto real (search_exact) | 0.4400 | 554.2 | — |
+| Madhava bound (5%/1%) | 0.4400 | 491.0 | 100% |
+| **Speed GPU (OpenCL v1.7.2)** | **0.4400** | **38.1** | **100%** |
+| Batch GPU | 0.4400 | 22.6 | 100% |
+
+**O R@10=0.44 em 10M reproduz o valor documentado do projeto** (~0.43-0.52),
+com o speed GPU **~13× mais rápido que o bound engine** (38ms vs 491ms) e 0
+violações em todos os métodos.
+
 ## [1.7.1] — 2026-08-07
 
 ### ⚡ Speed GPU: topk paralelo (divide-and-conquer) + QKᵀ com tiling

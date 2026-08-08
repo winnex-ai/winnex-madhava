@@ -1,0 +1,93 @@
+[{"stream_name":"stderr","time":5.830388241,"data":"/usr/local/lib/python3.12/dist-packages/nbformat/__init__.py:96: MissingIDFieldWarning: Cell is missing an id field, this will become a hard error in future nbformat versions. You may want to use `normalize()` on your notebooks before validations (available since nbformat 5.1.4). Previous versions of nbformat are fixing this issue transparently, and will stop doing so in the future.\n"}
+,{"stream_name":"stderr","time":5.830447814,"data":"  validate(nb)\n"}
+,{"stream_name":"stderr","time":6.617640946,"data":"0.00s - Debugger warning: It seems that frozen modules are being used, which may\n"}
+,{"stream_name":"stderr","time":6.617668655,"data":"0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off\n"}
+,{"stream_name":"stderr","time":6.617674537,"data":"0.00s - to python to disable frozen modules.\n"}
+,{"stream_name":"stderr","time":6.617678475,"data":"0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.\n"}
+,{"stream_name":"stderr","time":7.199626398,"data":"0.00s - Debugger warning: It seems that frozen modules are being used, which may\n"}
+,{"stream_name":"stderr","time":7.199655151,"data":"0.00s - make the debugger miss breakpoints. Please pass -Xfrozen_modules=off\n"}
+,{"stream_name":"stderr","time":7.199663562,"data":"0.00s - to python to disable frozen modules.\n"}
+,{"stream_name":"stderr","time":7.199666707,"data":"0.00s - Note: Debugging will proceed. Set PYDEVD_DISABLE_FILE_VALIDATION=1 to disable this validation.\n"}
+,{"stream_name":"stdout","time":10.8767305,"data":"   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 606.7/606.7 kB 31.8 MB/s eta 0:00:00\n"}
+,{"stream_name":"stdout","time":11.079755006,"data":"   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 606.7/606.7 kB 31.8 MB/s eta 0:00:00\n"}
+,{"stream_name":"stdout","time":16.055274099,"data":"installed winnex-madhava\n"}
+,{"stream_name":"stdout","time":16.068411693,"data":"libOpenCL present: True\n"}
+,{"stream_name":"stdout","time":16.084579038,"data":"winnex_madhava 1.7.1\n"}
+,{"stream_name":"stdout","time":16.084602461,"data":"CPU threads: 4\n"}
+,{"stream_name":"stdout","time":16.104029134,"data":"base : /kaggle/input/datasets/shurangwu/bigann-100m/base.u8bin\n"}
+,{"stream_name":"stdout","time":16.104051463,"data":"queries: /kaggle/input/datasets/shurangwu/bigann-100m/unif_query_10k.u8bin\n"}
+,{"stream_name":"stdout","time":16.10405615,"data":"gt   : /kaggle/input/datasets/shurangwu/bigann-100m/unif_groundtruth_10k.bin\n"}
+,{"stream_name":"stdout","time":16.104060447,"data":"BIGANN dataset found: True\n"}
+,{"stream_name":"stdout","time":16.191874953,"data":"Queries: (100, 128), GT: (100, 100)\n"}
+,{"stream_name":"stdout","time":16.207847406,"data":"Cobertura GT top-10 no subset 1,000,000: 0.006\n"}
+,{"stream_name":"stdout","time":16.207885385,"data":"=\u003e recall bruto vs GT oficial limitado a ~1% mesmo para scan exato.\n"}
+,{"stream_name":"stdout","time":24.749377957,"data":"Teto real (search_exact): R@10=0.9500 | lat=50.60ms | build=3.38s\n"}
+,{"stream_name":"stdout","time":24.749415661,"data":"=\u003e este é o limite físico: nenhum método pode superá-lo no subset.\n"}
+,{"stream_name":"stdout","time":33.729441898,"data":"Bound 5%/1%:  R@10=0.9500 | lat=42.90ms | build=1.93s | vio=0 | eff=100.0%\n"}
+,{"stream_name":"stdout","time":43.112779094,"data":"Bound 100%:  R@10=0.9500 | lat=101.19ms | build=1.93s | eff=100.0%\n"}
+,{"stream_name":"stdout","time":43.112828584,"data":"=\u003e custo de recall da poda 5%/1% vs 100%: +0.0000\n"}
+,{"stream_name":"stderr","time":44.728423259,"data":"[Winnex Madhava] SpeedEngine: GPU backend enabled (OpenCL QK^T + device topk, JIT-compiled kernels).\n"}
+,{"stream_name":"stderr","time":45.629782441,"data":"[Winnex Madhava] SpeedEngine: GPU backend enabled (OpenCL QK^T + device topk, JIT-compiled kernels).\n"}
+,{"stream_name":"stderr","time":45.62981741,"data":"\n"}
+,{"stream_name":"stderr","time":45.629821724,"data":"[Winnex Madhava] SpeedEngine: GPU backend enabled (OpenCL QK^T + device topk, JIT-compiled kernels).\n"}
+,{"stream_name":"stdout","time":45.728183562,"data":"backend=gpu | has_gpu=True | reason=''\n"}
+,{"stream_name":"stdout","time":54.671682276,"data":"Speed GPU:  R@10=0.9500 | lat=98.27ms | build=1.44s | eff=100.0%\n"}
+,{"stream_name":"stdout","time":54.671724061,"data":"=\u003e exact scan: deve atingir 100% do teto (todos os vizinhos).\n"}
+,{"stream_name":"stdout","time":55.743728421,"data":"Batch 100 queries: 367.9ms total | 3.679ms/query | 271.8 QPS\n"}
+,{"stream_name":"stdout","time":55.743762541,"data":"Batch R@10 = 0.9500 (vs single 0.9500)\n"}
+,{"stream_name":"stdout","time":56.13831857,"data":"Batch == single-query (top-1 dos 10 primeiros): True\n"}
+,{"stream_name":"stdout","time":56.154349492,"data":"{\n"}
+,{"stream_name":"stdout","time":56.154386807,"data":"  \"package\": \"winnex-madhava\",\n"}
+,{"stream_name":"stdout","time":56.154391721,"data":"  \"version\": \"1.7.1\",\n"}
+,{"stream_name":"stdout","time":56.154395304,"data":"  \"methodology\": \"RECALL vs GT OFICIAL BIGANN-100M L2 (alinhamento direto), recall normalizado por cobertura do subset; teto = search_exact L2 no subset (limite fisico); speed GPU = exact scan QK^T, nao sublinear (honestidade).\",\n"}
+,{"stream_name":"stdout","time":56.154399811,"data":"  \"reference\": \"GT OFICIAL BIGANN-100M (nao ceiling artificial)\",\n"}
+,{"stream_name":"stdout","time":56.15440367,"data":"  \"N_subset\": 1000000,\n"}
+,{"stream_name":"stdout","time":56.154407069,"data":"  \"NQ\": 100,\n"}
+,{"stream_name":"stdout","time":56.154410397,"data":"  \"dim\": 128,\n"}
+,{"stream_name":"stdout","time":56.154413768,"data":"  \"k\": 10,\n"}
+,{"stream_name":"stdout","time":56.154417388,"data":"  \"gt_coverage_topk\": 0.006,\n"}
+,{"stream_name":"stdout","time":56.154421432,"data":"  \"ceiling_search_exact\": {\n"}
+,{"stream_name":"stdout","time":56.154424951,"data":"    \"recall_at_10\": 0.95,\n"}
+,{"stream_name":"stdout","time":56.154428624,"data":"    \"latency_ms\": 50.60239791870117,\n"}
+,{"stream_name":"stdout","time":56.154432321,"data":"    \"build_s\": 3.376499652862549\n"}
+,{"stream_name":"stdout","time":56.154435957,"data":"  },\n"}
+,{"stream_name":"stdout","time":56.154439264,"data":"  \"methods\": [\n"}
+,{"stream_name":"stdout","time":56.154442726,"data":"    {\n"}
+,{"stream_name":"stdout","time":56.154446236,"data":"      \"method\": \"MadhavaL2 bound (int8 5%/1%)\",\n"}
+,{"stream_name":"stdout","time":56.154450533,"data":"      \"recall_at_10\": 0.95,\n"}
+,{"stream_name":"stdout","time":56.15445399,"data":"      \"latency_ms\": 42.9044771194458,\n"}
+,{"stream_name":"stdout","time":56.154457516,"data":"      \"build_s\": 1.9306166172027588,\n"}
+,{"stream_name":"stdout","time":56.154460931,"data":"      \"efficiency_pct\": 100.0,\n"}
+,{"stream_name":"stdout","time":56.154481859,"data":"      \"bound_violations\": 0\n"}
+,{"stream_name":"stdout","time":56.154485527,"data":"    },\n"}
+,{"stream_name":"stdout","time":56.154489052,"data":"    {\n"}
+,{"stream_name":"stdout","time":56.154493168,"data":"      \"method\": \"MadhavaL2 bound (int8 100%/100%)\",\n"}
+,{"stream_name":"stdout","time":56.154497745,"data":"      \"recall_at_10\": 0.95,\n"}
+,{"stream_name":"stdout","time":56.154525016,"data":"      \"latency_ms\": 101.19294166564941,\n"}
+,{"stream_name":"stdout","time":56.154530396,"data":"      \"build_s\": 1.932030200958252,\n"}
+,{"stream_name":"stdout","time":56.154548977,"data":"      \"efficiency_pct\": 100.0\n"}
+,{"stream_name":"stdout","time":56.154553444,"data":"    },\n"}
+,{"stream_name":"stdout","time":56.154556986,"data":"    {\n"}
+,{"stream_name":"stdout","time":56.154560526,"data":"      \"method\": \"Madhava speed GPU (OpenCL exact scan)\",\n"}
+,{"stream_name":"stdout","time":56.154564406,"data":"      \"recall_at_10\": 0.95,\n"}
+,{"stream_name":"stdout","time":56.154572032,"data":"      \"latency_ms\": 98.26976776123047,\n"}
+,{"stream_name":"stdout","time":56.154576496,"data":"      \"build_s\": 1.4391000270843506,\n"}
+,{"stream_name":"stdout","time":56.154597466,"data":"      \"efficiency_pct\": 100.0,\n"}
+,{"stream_name":"stdout","time":56.1546015,"data":"      \"backend\": \"gpu\",\n"}
+,{"stream_name":"stdout","time":56.154605565,"data":"      \"has_gpu\": true,\n"}
+,{"stream_name":"stdout","time":56.154609292,"data":"      \"batch_ms_per_query\": 3.6790871620178223,\n"}
+,{"stream_name":"stdout","time":56.154614657,"data":"      \"batch_recall_at_10\": 0.95,\n"}
+,{"stream_name":"stdout","time":56.154619447,"data":"      \"honesty_note\": \"exact scan QK^T full corpus; NOT sublinear\"\n"}
+,{"stream_name":"stdout","time":56.154624289,"data":"    }\n"}
+,{"stream_name":"stdout","time":56.154628694,"data":"  ]\n"}
+,{"stream_name":"stdout","time":56.154632521,"data":"}\n"}
+,{"stream_name":"stdout","time":56.154636288,"data":"report saved to /kaggle/working/report.json\n"}
+,{"stream_name":"stderr","time":58.578824417,"data":"/usr/local/lib/python3.12/dist-packages/mistune.py:435: SyntaxWarning: invalid escape sequence '\\|'\n"}
+,{"stream_name":"stderr","time":58.578860523,"data":"  cells[i][c] = re.sub('\\\\\\\\\\|', '|', cell)\n"}
+,{"stream_name":"stderr","time":58.727758168,"data":"/usr/local/lib/python3.12/dist-packages/nbconvert/filters/filter_links.py:36: SyntaxWarning: invalid escape sequence '\\_'\n"}
+,{"stream_name":"stderr","time":58.727780904,"data":"  text = re.sub(r'_', '\\_', text) # Escape underscores in display text\n"}
+,{"stream_name":"stderr","time":59.318487462,"data":"[NbConvertApp] Converting notebook __notebook__.ipynb to notebook\n"}
+,{"stream_name":"stderr","time":59.618802582,"data":"[NbConvertApp] Writing 26911 bytes to __notebook__.ipynb\n"}
+,{"stream_name":"stderr","time":61.937513839,"data":"[NbConvertApp] Converting notebook __notebook__.ipynb to html\n"}
+,{"stream_name":"stderr","time":62.814838946,"data":"[NbConvertApp] Writing 342054 bytes to __results__.html\n"}
+]

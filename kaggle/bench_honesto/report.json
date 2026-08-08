@@ -1,0 +1,45 @@
+{
+  "package": "winnex-madhava",
+  "version": "1.7.1",
+  "methodology": "RECALL vs GT OFICIAL BIGANN-100M L2 (alinhamento direto), recall normalizado por cobertura do subset; teto = search_exact L2 no subset (limite fisico); speed GPU = exact scan QK^T, nao sublinear (honestidade).",
+  "reference": "GT OFICIAL BIGANN-100M (nao ceiling artificial)",
+  "N_subset": 1000000,
+  "NQ": 100,
+  "dim": 128,
+  "k": 10,
+  "gt_coverage_topk": 0.006,
+  "ceiling_search_exact": {
+    "recall_at_10": 0.95,
+    "latency_ms": 50.60239791870117,
+    "build_s": 3.376499652862549
+  },
+  "methods": [
+    {
+      "method": "MadhavaL2 bound (int8 5%/1%)",
+      "recall_at_10": 0.95,
+      "latency_ms": 42.9044771194458,
+      "build_s": 1.9306166172027588,
+      "efficiency_pct": 100.0,
+      "bound_violations": 0
+    },
+    {
+      "method": "MadhavaL2 bound (int8 100%/100%)",
+      "recall_at_10": 0.95,
+      "latency_ms": 101.19294166564941,
+      "build_s": 1.932030200958252,
+      "efficiency_pct": 100.0
+    },
+    {
+      "method": "Madhava speed GPU (OpenCL exact scan)",
+      "recall_at_10": 0.95,
+      "latency_ms": 98.26976776123047,
+      "build_s": 1.4391000270843506,
+      "efficiency_pct": 100.0,
+      "backend": "gpu",
+      "has_gpu": true,
+      "batch_ms_per_query": 3.6790871620178223,
+      "batch_recall_at_10": 0.95,
+      "honesty_note": "exact scan QK^T full corpus; NOT sublinear"
+    }
+  ]
+}

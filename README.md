@@ -568,6 +568,32 @@ physical ceiling given GT coverage (~0.6% in the 1M prefix of the 100M GT) —
 100% of it. See [Speed GPU tuning](#choosing-speed--speed_n_anchors--speed_nprobe)
 for how to configure the speed mode and why single-query is now fast.
 
+### Honest benchmark 10M — larger subset, official GT, GPU (v1.7.2)
+
+The same honest protocol on a **larger subset — N=10M** (GT coverage ~8% vs
+~1% at 1M), which gives a higher raw recall and a more meaningful validation
+against the official ground truth.
+
+[![Kaggle](https://img.shields.io/badge/Kaggle-Honest%2010M%20GPU%20vs%20Official%20GT-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-honest-10m-gpu-vs-official-gt)
+
+**Results (BIGANN-100M, subset 10M, 100 queries, official GT, Kaggle GPU P100):**
+
+| Method | R@10 | Lat (ms) | Build (s) | Efficiency | Bound vio. |
+|---|---|---|---|---|---|
+| Exact-scan ceiling (`search_exact`) | 0.4400 | 554.2 | 26.8 | — | — |
+| **Madhava bound (int8 5%/1%)** | **0.4400** | 491.0 | **14.6** | **100%** | **0** |
+| **Madhava bound (int8 100%/100%)** | **0.4400** | 998.0 | 14.4 | **100%** | **0** |
+| **Madhava speed GPU (OpenCL)** | **0.4400** | **38.1** | **6.7** | **100%** | — |
+| Speed GPU **batch** (100 q) | **0.4400** | 22.6 | — | **100%** | — |
+
+**Read the honest insight**: the R@10 of **0.44 at 10M reproduces the value the
+project documents** (README/VERIFIED: R@10≈0.43-0.52) — it is the subset's
+physical ceiling given ~8% GT coverage, not a defect. The bound engine reaches
+**100% of that ceiling with 0 bound violations**, and the speed GPU (OpenCL,
+verified `backend="gpu"`, v1.7.2 fused kernel) is **~13× faster than the bound
+engine** (38.1ms vs 491ms single-query) — the fastest exact path at 10M. The
+poda 5%/1% costs zero recall vs 100%. Batch recall == single-query.
+
 ### Hybrid benchmark (News 210K, v1.3.0)
 
 The `winnex-madhava` hybrid mode (MadHybrid) benchmark — same engine,
@@ -595,7 +621,8 @@ results. The `winnex-madhava` hybrid mode reaches the same NDCG@10 as the
 exact FlatIP baseline while running 4× faster per query.
 
 Related public benchmarks:
-- [winnex-madhava-1-7-honest-gpu-vs-official-gt](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-honest-gpu-vs-official-gt) — **honest**: pip-installed wheel, official GT, normalized recall, GPU truthfully reported
+- [winnex-madhava-1-7-honest-10m-gpu-vs-official-gt](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-honest-10m-gpu-vs-official-gt) — **honest 10M**: larger subset, official GT, R@10=0.44, GPU 38ms, 100% efficiency
+- [winnex-madhava-1-7-honest-gpu-vs-official-gt](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-honest-gpu-vs-official-gt) — **honest 1M**: pip-installed wheel, official GT, normalized recall, GPU truthfully reported
 - [winnex-madhava-pip-200-queries](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-200-queries) — official L2 GT, 200 queries, 10M/100M
 - [winnex-madhava-faiss-benchmark](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-faiss-benchmark) — side-by-side with FAISS HNSW/IVF/IVF-PQ
 - [winnex-madhava-hybrid-vs-hnsw-ivf-ivf-pq](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-hybrid-vs-hnsw-ivf-ivf-pq) — hybrid (MadHybrid) vs HNSW/IVF/IVF-PQ on News 210K
