@@ -614,15 +614,24 @@ class MadhavaSpeed:
         self._native = None
         if hasattr(_native, "SpeedEngine"):
             try:
-                # The native engine takes float32; the C++ core normalizes for
-                # cosine and precomputes ||v||² for L2 internally.
-                f32 = arr.astype(np.float32)
-                self._native = _native.SpeedEngine(
-                    np.ascontiguousarray(f32), self._dim,
-                    1 if self._metric == "l2" else 0,
-                    int(n_anchors), int(nprobe),
-                    bool(require_gpu),
-                )
+                # M3 (v1.8.0): se o corpus é uint8, usa o construtor uint8 direto
+                # (evita a cópia float32 4× na camada Python — o C++ converte
+                # internamente). Se float32, usa o construtor float32.
+                if arr.dtype == np.uint8:
+                    self._native = _native.SpeedEngine(
+                        np.ascontiguousarray(arr), self._dim,
+                        1 if self._metric == "l2" else 0,
+                        int(n_anchors), int(nprobe),
+                        bool(require_gpu),
+                    )
+                else:
+                    f32 = arr.astype(np.float32)
+                    self._native = _native.SpeedEngine(
+                        np.ascontiguousarray(f32), self._dim,
+                        1 if self._metric == "l2" else 0,
+                        int(n_anchors), int(nprobe),
+                        bool(require_gpu),
+                    )
             except Exception:
                 if self._require_gpu:
                     raise

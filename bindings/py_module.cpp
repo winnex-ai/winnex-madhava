@@ -140,6 +140,20 @@ PYBIND11_MODULE(_winnex_madhava, m) {
              py::arg("corpus_f32"), py::arg("dim"), py::arg("metric"),
              py::arg("n_anchors") = 0, py::arg("nprobe") = 4,
              py::arg("require_gpu") = false)
+        // M3 (v1.8.0): construtor uint8 — evita a cópia float32 extra na camada
+        // Python (build_engine(speed=True) fazia arr.astype(float32) na RAM).
+        // O C++ converte internamente em corpus_f32_, mas sem a cópia Python 4×.
+        // Permite ao DevAI processar corpora uint8 grandes (~10M+) com menor
+        // pico de RAM e sem o passo de conversão explícito.
+        .def(py::init([](py::array_t<uint8_t, py::array::c_style> arr, int dim, int metric,
+                         int n_anchors, int nprobe, bool require_gpu) {
+                 auto info = arr.request();
+                 return new SpeedEngine((const uint8_t*)info.ptr, (int)info.shape[0], dim,
+                                        (Metric)metric, n_anchors, nprobe, require_gpu);
+             }),
+             py::arg("corpus_u8"), py::arg("dim"), py::arg("metric"),
+             py::arg("n_anchors") = 0, py::arg("nprobe") = 4,
+             py::arg("require_gpu") = false)
         .def("search",
              [](const SpeedEngine& self, py::array_t<float, py::array::c_style> q, int k) {
                  auto info = q.request();
