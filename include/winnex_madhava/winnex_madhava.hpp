@@ -134,6 +134,20 @@ public:
     SearchResult search(const float* query, const std::vector<float>& query_norm) const;
     SearchResult search(const float* query) const; // computes norm internally
 
+    // M1 (v1.8.0): batch search — processa nq queries de uma vez.
+    // Útil para o DevAI (batch RAG) e para a ingestão: evita o overhead de
+    // lançar o scan N× por query. Retorna nq*k indices (concatenados por query).
+    std::vector<int> search_batch(const float* queries, int nq, int k) const;
+
+    // M2 (v1.8.0): persistência do índice — permite ao Maestro (ERP) salvar e
+    // recarregar um índice sem rebuild. Serializa as projeções int8 + scales +
+    // residuals + configuração. O corpus bruto NÃO é serializado (fica no disco);
+    // o chamador re-anexa o base ao carregar.
+    bool save_index(const std::string& path) const;
+    // Carrega um índice salvo. Retorna false se o arquivo é inválido/incompatível.
+    // O chamador deve re-anexar o base (mesmo layout) antes de buscar.
+    bool load_index(const std::string& path);
+
     // Exact scan baseline: computes the chosen metric for ALL n vectors.
     // Returns the exact top-K (the recall ceiling of the subset).
     SearchResult search_exact(const float* query, const std::vector<float>& query_norm) const;

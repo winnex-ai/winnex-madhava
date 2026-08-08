@@ -56,6 +56,74 @@ inline float dot_f32(const float* a, const float* b, int d) {
 #endif
 }
 
+// M4 (v1.8.0): AVX2 dot of int8-quantized projections with per-axis float scale.
+//   inner = Σ (int8[j] * scale[j] * pq[j])
+// Processes 16 int8 (two AVX2 256-bit lanes) per iteration — the bound-scan
+// hot loop. Falls back to scalar when AVX2/FMA is unavailable.
+inline float dot_int8_scaled(const int8_t* a, const float* scale, const float* b, int d) {
+#if defined(__AVX2__) && defined(__FMA__)
+    __m256 s = _mm256_setzero_ps();
+    int i = 0;
+    for (; i + 16 <= d; i += 16) {
+        // 16 int8 -> two groups of 8, sign-extended to 32-bit int, then float.
+        __m128i u8lo = _mm_loadu_si128((const __m128i*)(a + i));
+        __m128i u8hi = _mm_srli_si128(u8lo, 8);
+        __m256i i32lo = _mm256_cvtepi8_epi32(u8lo);
+        __m256i i32hi = _mm256_cvtepi8_epi32(u8hi);
+        __m256 flo = _mm256_cvtepi32_ps(i32lo);
+        __m256 fhi = _mm256_cvtepi32_ps(i32hi);
+        // flo * scale[i..i+8] * b[i..i+8]
+        __m256 slo = _mm256_loadu_ps(scale + i);
+        __m256 shi = _mm256_loadu_ps(scale + i + 8);
+        __m256 blo = _mm256_loadu_ps(b + i);
+        __m256 bhi = _mm256_loadu_ps(b + i + 8);
+        s = _mm256_fmadd_ps(flo, _mm256_mul_ps(slo, blo), s);
+        s = _mm256_fmadd_ps(fhi, _mm256_mul_ps(shi, bhi), s);
+    }
+    float o[8];
+    _mm256_storeu_ps(o, s);
+    float r = o[0] + o[1] + o[2] + o[3] + o[4] + o[5] + o[6] + o[7];
+    for (; i < d; i++) r += (float)a[i] * scale[i] * b[i];
+    return r;
+#else
+    float r = 0;
+    for (int i = 0; i < d; i++) r += (float)a[i] * scale[i] * b[i];
+    return r;
+#endif
+}
+
+// M4 (v1.8.0): AVX2 L2² between a raw uint8 vector and a float32 query.
+//   s = Σ (v[j] - q[j])²
+// Processes 16 uint8 (two lanes) per iteration. Fallback to scalar.
+inline float l2_sq_avx(const uint8_t* v_raw, const float* q, int dim) {
+#if defined(__AVX2__) && defined(__FMA__)
+    __m256 s = _mm256_setzero_ps();
+    int j = 0;
+    for (; j + 16 <= dim; j += 16) {
+        __m128i u8 = _mm_loadu_si128((const __m128i*)(v_raw + j));
+        __m256i lo32 = _mm256_cvtepu8_epi32(u8);
+        __m256i hi32 = _mm256_cvtepu8_epi32(_mm_srli_si128(u8, 8));
+        __m256 flo = _mm256_cvtepi32_ps(lo32);
+        __m256 fhi = _mm256_cvtepi32_ps(hi32);
+        __m256 qlo = _mm256_loadu_ps(q + j);
+        __m256 qhi = _mm256_loadu_ps(q + j + 8);
+        __m256 dlo = _mm256_sub_ps(flo, qlo);
+        __m256 dhi = _mm256_sub_ps(fhi, qhi);
+        s = _mm256_fmadd_ps(dlo, dlo, s);
+        s = _mm256_fmadd_ps(dhi, dhi, s);
+    }
+    float o[8];
+    _mm256_storeu_ps(o, s);
+    float r = o[0] + o[1] + o[2] + o[3] + o[4] + o[5] + o[6] + o[7];
+    for (; j < dim; j++) { float d = (float)v_raw[j] - q[j]; r += d * d; }
+    return r;
+#else
+    float s = 0;
+    for (int j = 0; j < dim; j++) { float d = (float)v_raw[j] - q[j]; s += d * d; }
+    return s;
+#endif
+}
+
 // Load a raw uint8 vector into float32, computing its L2 norm.
 // Optionally normalizes to unit norm (cosine metric).
 inline float load_raw(const uint8_t* src, float* dst, int d, bool normalize) {
@@ -338,14 +406,13 @@ float MadhavaL2::ub_raw(int idx, int layer, const float* pq, float qr, float qm)
     if (cfg_.quant == QuantMode::Int8) {
         const int8_t* pr = (layer == 1) ? pr1_ + (size_t)idx * s : pr2_ + (size_t)idx * s;
         const float* scale = (layer == 1) ? pr1_scale_ : pr2_scale_;
-        float inner = 0;
-        for (int j = 0; j < s; j++) inner += (float)pr[j] * scale[j] * pq[j];
+        // M4: AVX2 dot int8×scale×pq (16 int8/iter) — o hot loop do Stage-1.
+        float inner = dot_int8_scaled(pr, scale, pq, s);
         float e = (layer == 1) ? e1_[idx] : e2_[idx];
         return inner + e * qr + qm + 1e-5f;
     } else {
         const float* prf = (layer == 1) ? pr1_f_ + (size_t)idx * s : pr2_f_ + (size_t)idx * s;
-        float inner = 0;
-        for (int j = 0; j < s; j++) inner += prf[j] * pq[j];
+        float inner = dot_f32(prf, pq, s);
         float e = (layer == 1) ? e1_[idx] : e2_[idx];
         return inner + e * qr;
     }
@@ -354,15 +421,46 @@ float MadhavaL2::ub_raw(int idx, int layer, const float* pq, float qr, float qm)
 // Exact metric score between a raw vector and a float query.
 float MadhavaL2::exact_score(int idx, const float* q) const {
     if (cfg_.metric == Metric::L2) {
-        return l2_sq(base_ + (size_t)idx * cfg_.dim, q, cfg_.dim);
+        // M4: AVX2 L2² (16 uint8/iter) — o hot loop do post-filter / scan exato.
+        return l2_sq_avx(base_ + (size_t)idx * cfg_.dim, q, cfg_.dim);
     } else {
         // Cosine on raw uint8 vs a (possibly un-normalized) float query.
+        // AVX2: carrega 16 uint8 -> float, acumula dot + vn2.
         float dot = 0, vn2 = 0, qn2 = 0;
+#if defined(__AVX2__) && defined(__FMA__)
+        __m256 sd = _mm256_setzero_ps();
+        __m256 sv = _mm256_setzero_ps();
+        int j = 0;
+        for (; j + 16 <= cfg_.dim; j += 16) {
+            const uint8_t* v8 = base_ + (size_t)idx * cfg_.dim + j;
+            __m128i u8 = _mm_loadu_si128((const __m128i*)v8);
+            __m256i lo32 = _mm256_cvtepu8_epi32(u8);
+            __m256i hi32 = _mm256_cvtepu8_epi32(_mm_srli_si128(u8, 8));
+            __m256 flo = _mm256_cvtepi32_ps(lo32);
+            __m256 fhi = _mm256_cvtepi32_ps(hi32);
+            __m256 qlo = _mm256_loadu_ps(q + j);
+            __m256 qhi = _mm256_loadu_ps(q + j + 8);
+            sd = _mm256_fmadd_ps(flo, qlo, sd);
+            sd = _mm256_fmadd_ps(fhi, qhi, sd);
+            sv = _mm256_fmadd_ps(flo, flo, sv);
+            sv = _mm256_fmadd_ps(fhi, fhi, sv);
+        }
+        float od[8], ov[8];
+        _mm256_storeu_ps(od, sd);
+        _mm256_storeu_ps(ov, sv);
+        for (int k = 0; k < 8; k++) { dot += od[k]; vn2 += ov[k]; }
+        for (; j < cfg_.dim; j++) {
+            float v = (float)base_[(size_t)idx * cfg_.dim + j];
+            dot += v * q[j];
+            vn2 += v * v;
+        }
+#else
         for (int j = 0; j < cfg_.dim; j++) {
             float v = (float)base_[(size_t)idx * cfg_.dim + j];
             dot += v * q[j];
             vn2 += v * v;
         }
+#endif
         for (int j = 0; j < cfg_.dim; j++) qn2 += q[j] * q[j];
         float denom = std::sqrt(vn2 * qn2);
         return denom > 1e-10f ? dot / denom : 0.0f;
@@ -585,6 +683,135 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
 SearchResult MadhavaL2::search(const float* query) const {
     std::vector<float> qn;
     return search(query, qn);
+}
+
+// M1 (v1.8.0): batch search — nq queries, k resultados cada.
+// Paralelizado cross-query com OpenMP: cada thread processa um sub-range de
+// queries (o engine é imutável após build → thread-safe). O resultado é
+// concatenado na ordem das queries (determinístico).
+std::vector<int> MadhavaL2::search_batch(const float* queries, int nq, int k) const {
+    std::vector<int> all;
+    if (!built_ || nq <= 0 || k <= 0) return all;
+    all.resize((size_t)nq * k);
+#pragma omp parallel for schedule(dynamic)
+    for (int qi = 0; qi < nq; qi++) {
+        SearchResult r = search(queries + (size_t)qi * cfg_.dim);
+        int base = qi * k;
+        for (int j = 0; j < (int)r.indices.size() && j < k; j++)
+            all[base + j] = r.indices[j];
+        // se o motor retornou menos que k (não deve), preenche com -1
+        for (int j = (int)r.indices.size(); j < k; j++)
+            all[base + j] = -1;
+    }
+    return all;
+}
+
+// M2 (v1.8.0): persistência do índice (formato binário, mmap-friendly).
+// Layout do arquivo:
+//   [magic:8B "WMADHAV1"][cfg][n:int32][s1:int32][s2:int32]
+//   [P1: s1*D float32][P2: s2*D float32]
+//   [pr1: n*s1 int8][pr2: n*s2 int8]
+//   [pr1_scale: s1 float32][pr2_scale: s2 float32]
+//   [e1: n float32][e2: n float32]
+//   [vn: n float32][vn_eff: n float32]
+// O corpus bruto NÃO é salvo (fica no disco); o chamador re-anexa o base.
+bool MadhavaL2::save_index(const std::string& path) const {
+    if (!built_) return false;
+    FILE* f = fopen(path.c_str(), "wb");
+    if (!f) return false;
+    const char* magic = "WMADHAV1";
+    fwrite(magic, 1, 8, f);
+    int n = n_, s1 = cfg_.stage1_dim, s2 = cfg_.stage2_dim;
+    int D = cfg_.dim;
+    fwrite(&cfg_.dim, sizeof(int), 1, f);
+    fwrite(&n, sizeof(int), 1, f);
+    fwrite(&s1, sizeof(int), 1, f);
+    fwrite(&s2, sizeof(int), 1, f);
+    fwrite(P1_, sizeof(float), (size_t)s1 * D, f);
+    if (s2 > 0) fwrite(P2_, sizeof(float), (size_t)s2 * D, f);
+    if (cfg_.quant == QuantMode::Int8) {
+        fwrite(pr1_, 1, (size_t)n * s1, f);
+        if (s2 > 0) fwrite(pr2_, 1, (size_t)n * s2, f);
+    } else {
+        fwrite(pr1_f_, sizeof(float), (size_t)n * s1, f);
+        if (s2 > 0) fwrite(pr2_f_, sizeof(float), (size_t)n * s2, f);
+    }
+    fwrite(pr1_scale_, sizeof(float), (size_t)s1, f);
+    if (s2 > 0) fwrite(pr2_scale_, sizeof(float), (size_t)s2, f);
+    fwrite(e1_, sizeof(float), (size_t)n, f);
+    if (s2 > 0) fwrite(e2_, sizeof(float), (size_t)n, f);
+    fwrite(vn_, sizeof(float), (size_t)n, f);
+    fwrite(vn_eff_, sizeof(float), (size_t)n, f);
+    fclose(f);
+    return true;
+}
+
+bool MadhavaL2::load_index(const std::string& path) {
+    // Limpa o estado atual.
+    delete[] P1_; delete[] P2_; delete[] pr1_; delete[] pr2_;
+    delete[] pr1_f_; delete[] pr2_f_; delete[] pr1_scale_; delete[] pr2_scale_;
+    delete[] e1_; delete[] e2_; delete[] vn_; delete[] vn_eff_;
+    P1_ = P2_ = nullptr; pr1_ = pr2_ = nullptr;
+    pr1_f_ = pr2_f_ = nullptr; pr1_scale_ = pr2_scale_ = nullptr;
+    e1_ = e2_ = vn_ = vn_eff_ = nullptr;
+    built_ = false;
+
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    char magic[8] = {0};
+    if (fread(magic, 1, 8, f) != 8 || std::memcmp(magic, "WMADHAV1", 8) != 0) {
+        fclose(f); return false;
+    }
+    int n = 0, s1 = 0, s2 = 0, D = 0;
+    fread(&D, sizeof(int), 1, f);
+    fread(&n, sizeof(int), 1, f);
+    fread(&s1, sizeof(int), 1, f);
+    fread(&s2, sizeof(int), 1, f);
+    if (n <= 0 || s1 <= 0 || D <= 0 || s1 > 4096 || s2 > 4096) {
+        fclose(f); return false;
+    }
+    cfg_.dim = D;
+    cfg_.stage1_dim = s1;
+    cfg_.stage2_dim = s2;
+    n_ = n;
+
+    P1_ = new float[(size_t)s1 * D];
+    if (s2 > 0) P2_ = new float[(size_t)s2 * D];
+    pr1_scale_ = new float[s1];
+    if (s2 > 0) pr2_scale_ = new float[s2];
+    e1_ = new float[n];
+    if (s2 > 0) e2_ = new float[n];
+    vn_ = new float[n];
+    vn_eff_ = new float[n];
+
+    bool ok = true;
+    ok &= fread(P1_, sizeof(float), (size_t)s1 * D, f) == (size_t)s1 * D;
+    if (s2 > 0) ok &= fread(P2_, sizeof(float), (size_t)s2 * D, f) == (size_t)s2 * D;
+    if (cfg_.quant == QuantMode::Int8) {
+        pr1_ = new int8_t[(size_t)n * s1];
+        ok &= fread(pr1_, 1, (size_t)n * s1, f) == (size_t)n * s1;
+        if (s2 > 0) {
+            pr2_ = new int8_t[(size_t)n * s2];
+            ok &= fread(pr2_, 1, (size_t)n * s2, f) == (size_t)n * s2;
+        }
+    } else {
+        pr1_f_ = new float[(size_t)n * s1];
+        ok &= fread(pr1_f_, sizeof(float), (size_t)n * s1, f) == (size_t)n * s1;
+        if (s2 > 0) {
+            pr2_f_ = new float[(size_t)n * s2];
+            ok &= fread(pr2_f_, sizeof(float), (size_t)n * s2, f) == (size_t)n * s2;
+        }
+    }
+    ok &= fread(pr1_scale_, sizeof(float), (size_t)s1, f) == (size_t)s1;
+    if (s2 > 0) ok &= fread(pr2_scale_, sizeof(float), (size_t)s2, f) == (size_t)s2;
+    ok &= fread(e1_, sizeof(float), (size_t)n, f) == (size_t)n;
+    if (s2 > 0) ok &= fread(e2_, sizeof(float), (size_t)n, f) == (size_t)n;
+    ok &= fread(vn_, sizeof(float), (size_t)n, f) == (size_t)n;
+    ok &= fread(vn_eff_, sizeof(float), (size_t)n, f) == (size_t)n;
+    fclose(f);
+
+    built_ = ok;
+    return ok;
 }
 
 SearchResult MadhavaL2::search_exact(const float* query) const {

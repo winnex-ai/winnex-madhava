@@ -105,6 +105,24 @@ PYBIND11_MODULE(_winnex_madhava, m) {
                  return self.search_exact((const float*)info.ptr);
              },
              py::arg("query"))
+        .def("search_batch",
+             [](const MadhavaL2& self, py::array_t<float, py::array::c_style | py::array::forcecast> q, int nq, int k) {
+                 auto info = q.request();
+                 if (info.ndim != 2 || (int)info.shape[0] != nq || (int)info.shape[1] != self.dim())
+                     throw std::runtime_error("queries must be (nq, dim) float32");
+                 return self.search_batch((const float*)info.ptr, nq, k);
+             },
+             py::arg("queries"), py::arg("nq"), py::arg("k"))
+        .def("save_index",
+             [](const MadhavaL2& self, const std::string& path) {
+                 return self.save_index(path);
+             },
+             py::arg("path"))
+        .def("load_index",
+             [](MadhavaL2& self, const std::string& path) {
+                 return self.load_index(path);
+             },
+             py::arg("path"))
         .def("num_vectors", &MadhavaL2::num_vectors)
         .def("dim", &MadhavaL2::dim)
         .def("config", &MadhavaL2::config)

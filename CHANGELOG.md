@@ -5,6 +5,34 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] — 2026-08-08
+
+### ⚡ Motor para o Maestro — M4 (AVX2), M1 (batch), M2 (persistência)
+
+Capacidades adicionadas para servir o Maestro (ERP semântico):
+
+**M4 — AVX2/FMA nos hot loops (latência):**
+- `dot_int8_scaled`: dot int8×scale×float vetorizado (16 int8/iter) no `ub_raw`.
+- `l2_sq_avx`: L2² uint8×float vetorizado (16 uint8/iter) no `exact_score`.
+- `exact_score` cosine vetorizado.
+- **Medido:** `search_exact` 1M: 9.0ms → **3.87ms (2.3×)**. Corretude preservada
+  (recall 1.0, 0 violações).
+
+**M1 — `search_batch` no bound engine (batch RAG):**
+- Processa N queries de uma vez, paralelizado cross-query (OpenMP, engine
+  imutável → thread-safe). Retorna nq×k indices.
+- **Medido:** 50 queries em 1M: serial 491ms → batch **86ms (5.7×)**.
+
+**M2 — persistência do índice (`save_index`/`load_index`):**
+- Serializa projeções int8 + scales + residuals + config (binário, mmap-friendly).
+- O corpus bruto fica no disco (o chamador re-anexa o base).
+- **Medido:** N=100K int8: save 6.8ms (20.9MB), load **4.5ms** vs rebuild ~200ms
+  (**45× mais rápido**) — o ERP reinicia sem rebuild.
+
+**Nota (bug pré-existente documentado):** o `early_exit=True` no caminho **L2**
+degrada o recall (1.0 → 0.10). Não afeta produção (default L2 = off; cosine =
+on e funciona). Correção em versão futura.
+
 ## [1.7.2] — 2026-08-08
 
 ### ⚡ Speed GPU: fused QKᵀ+topk — single-query 20× mais rápido
