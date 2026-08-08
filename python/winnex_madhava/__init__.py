@@ -328,9 +328,9 @@ def retrieve(
         "k3": int(res.k3),
         "latency_ms": float(res.latency_ms),
         "proof": (
-            "cada documento excluído tem prova Cauchy-Schwarz de que não está "
-            "no top-K (bound_violations == 0); recall vs scan exato: 99.6-100% "
-            "com configuração progressiva"
+            "every excluded document carries a Cauchy-Schwarz proof that it is "
+            "not in the top-K (bound_violations == 0); recall vs exact scan: "
+            "99.6-100% with progressive configuration"
         ),
     }
     if corpus_text is not None:
