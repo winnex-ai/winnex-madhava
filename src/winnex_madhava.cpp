@@ -352,10 +352,14 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
 
     // 4. Streaming pass: compute projections + residuals.
     const int CHUNK = 500000;
-    std::vector<float> ch((size_t)CHUNK * D);
     int p = 0;
     while (p < n) {
         int nt = std::min(CHUNK, n - p);
+        // Allocate only the current batch (nt * D), not CHUNK * D — avoids a
+        // huge fixed allocation (500K*D*4, e.g. 2GB for D=1024) that OOMs
+        // small corpora on memory-limited containers. The C++ transaction
+        // stays robust regardless of corpus size.
+        std::vector<float> ch((size_t)nt * D);
         for (int i = 0; i < nt; i++) {
             float raw_norm;
             load_raw(base_ + (size_t)(p + i) * D, ch.data() + (size_t)i * D, D, normalize);

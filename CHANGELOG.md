@@ -5,6 +5,21 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.1] — 2026-08-08
+
+### 🛠 Fix: streaming build allocates only the current batch (robust C++ transaction)
+
+The build streaming pass allocated a **fixed CHUNK × dim** buffer
+(500K × dim × 4 bytes — e.g. 2 GB for dim=1024) regardless of corpus size.
+This OOM-crashed small corpora on memory-limited containers (the Maestro
+backend has a 2 GB limit). Now it allocates only `nt × dim` per batch.
+
+- Build of a 4-vector 1024d corpus: ~2 GB alloc → **~16 KB**.
+- Enables dim=1024 (Qwen3-Embedding) inside the Maestro container.
+- Keeps the streaming behavior for large corpora (chunked, memory-bounded).
+
+## [1.8.0] — 2026-08-08
+
 ## [1.8.0] — 2026-08-08
 
 ### ⚡ Motor para o Maestro — M4 (AVX2), M1 (batch), M2 (persistência)
