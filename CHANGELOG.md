@@ -5,6 +5,22 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.2] — 2026-08-11
+
+### 🔴 Fix (P0): early_exit default for cosine — recall 1.0 → 0.10 in high dimension
+
+The Python binding forced `early_exit=True` for cosine (auto). In high
+dimensions (dim >= 384) the modulated bound does not order like the exact
+score (the bound is ~19× wider than the real neighbour separation), so
+early-exit stopped at the wrong candidate and recall dropped to 0.10.
+
+**Fix:** the default is now `False` (safe): the exact post-filter runs, which
+guarantees recall=1.0. Operators may enable early_exit explicitly when they
+know the corpus/dimension is safe.
+
+**Validated (E2E):** cosine dim=384, default config → recall@10 = 1.000
+(was 0.10 with the old default).
+
 ## [1.8.1] — 2026-08-08
 
 ### 🛠 Fix: streaming build allocates only the current batch (robust C++ transaction)

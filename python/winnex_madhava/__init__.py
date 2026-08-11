@@ -213,10 +213,13 @@ def build_engine(
     cfg.modulation = bool(modulation)
     cfg.postfilter = bool(postfilter)
     cfg.normalize_input = bool(normalize_input)
-    # early_exit default: True for cosine (the V17 mode, where the modulated
-    # score is a valid similarity upper bound and k3 drops to ~100); False for
-    # L2 (where the bound is less tight and pruning loses more recall).
-    cfg.early_exit = bool(early_exit) if early_exit is not None else is_cosine
+    # early_exit default: False (safe). BUG FIX (P0): forcing True for cosine
+    # degraded recall to 0.10 in high dimensions (dim >= 384) because the
+    # modulated bound does not order like the exact score when the bound is
+    # loose (the curse of dimensionality). The safe default is early_exit off
+    # (exact post-filter), which guarantees recall=1.0. Operators may enable
+    # early_exit explicitly when they know the corpus/dimension is safe.
+    cfg.early_exit = bool(early_exit) if early_exit is not None else False
     cfg.k2_max = int(k2_max)
     cfg.seed = int(seed)
 
@@ -239,7 +242,7 @@ def build_engine(
             c.modulation = bool(modulation)
             c.postfilter = bool(postfilter)
             c.normalize_input = bool(normalize_input)
-            c.early_exit = bool(early_exit) if early_exit is not None else is_cosine
+            c.early_exit = bool(early_exit) if early_exit is not None else False
             c.k2_max = int(k2_max)
             c.seed = int(seed)
             e = MadhavaL2(c)
