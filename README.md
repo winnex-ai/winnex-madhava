@@ -502,6 +502,14 @@ same robust recall function:
 
 [![Kaggle](https://img.shields.io/badge/Kaggle-pip--200--queries-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-200-queries)
 
+[![Kaggle](https://img.shields.io/badge/Kaggle-GloVe%20real%20embeddings-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-benchmark-glove)
+
+> **GloVe honest benchmark.** Installs `winnex-madhava` from PyPI, indexes real
+> GloVe embeddings (dataset `anmolkumar/glove-embeddings`), and reports
+> Recall@10 vs the exact-scan on the same data — the honest ceiling. `0 bound
+> violations` by construction. Result: Recall@10 = 0.448, NDCG@10 = 0.577,
+> 0 bound violations (100K vectors).
+
 ### Real benchmark — pip-installed wheel, validated reference, GPU (v1.7.2)
 
 Installs `winnex-madhava` **from PyPI via pip** and benchmarks it against a
