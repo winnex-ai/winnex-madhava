@@ -49,6 +49,25 @@ enum class QuantMode {
 };
 
 // ---------------------------------------------------------------------------
+// Projection basis — the "UB Width" mode
+// ---------------------------------------------------------------------------
+// The Cauchy-Schwarz bound tightness depends on the residual
+//     e(v) = sqrt(||v||^2 − ||P v||^2),
+// which is the "UB width". A random projection keeps e(v) ≈ sqrt(1 − s/d) at
+// dimension d (large at d = 1536 → the bound degenerates to exhaustive scan).
+// Aligning the projection to the principal directions of the corpus shrinks
+// e(v) to the manifold residual, restoring pruning power at high dimension.
+enum class BasisMode {
+    Random = 0,     // default: QR-orthogonalized random Gaussian (Modified GS).
+                    // The historical behavior — unchanged.
+    PCACorpus = 1   // UB Width: principal directions of the corpus (PCA).
+                    // e(v) shrinks to the manifold residual, the bound stays
+                    // tight at high dimension, and — because P is orthonormal —
+                    // the bound remains valid in the ORIGINAL space:
+                    // 0 violations by construction.
+};
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 struct Config {
@@ -56,9 +75,13 @@ struct Config {
     int dim = 128;            // vector dimensionality (uint8 raw bytes)
     int seed = 42;            // PRNG seed for the MGS projections
 
+    // UB Width mode (BasisMode::PCACorpus): sample size for the covariance.
+    int pca_sample = 10000;   // max vectors used to estimate the PCA basis
+
     // Metric & quantization (stack parametrizable)
     Metric metric = Metric::Cosine;   // stack default: cosine over normalized embeddings
     QuantMode quant = QuantMode::Int8;
+    BasisMode basis = BasisMode::Random;  // Random (default) or PCACorpus (UB Width)
 
     // Cascade (two-stage bound, stack [64,128])
     int stage1_dim = 64;      // Stage-1 QR projection (wide bound B1)
@@ -130,6 +153,20 @@ public:
     // raw_base must point to at least n*dim uint8 bytes, kept alive during use.
     void build(const uint8_t* raw_base, int n);
 
+    // Build from float32 embeddings (n*dim) — the UB-Width path. The caller
+    // owns the buffer. With BasisMode::PCACorpus this is the CORRECT input
+    // (a uint8 corpus destroys the manifold the PCA needs to align with).
+    void build_float32(const float* raw_base, int n);
+
+    // UB Width: supply the projection basis explicitly (e.g. computed by the
+    // X-Factor, or by a robust numpy `eigh` over the corpus covariance).
+    // P1 must be [stage1_dim × dim] orthonormal rows; if stage2_dim > 0, P2
+    // must be [stage2_dim × dim]. Overrides cfg_.basis for the given stage.
+    // This is the recommended path for d ~ 1536: a hand-rolled Jacobi in
+    // float32 under-converges and collapses to the null subspace, while the
+    // X-Factor's power iteration (or numpy's LAPACK eigh) is robust.
+    void set_basis(const float* P1, const float* P2 = nullptr);
+
     // Search: bound pruning (top-k1/k2) + optional post-filter.
     SearchResult search(const float* query, const std::vector<float>& query_norm) const;
     SearchResult search(const float* query) const; // computes norm internally
@@ -160,6 +197,15 @@ public:
     double build_seconds() const { return build_s_; }
     bool built() const { return built_; }
 
+    // UB Width diagnostics: the projection basis (orthonormal rows) and the
+    // per-vector Cauchy-Schwarz residuals e(v) = sqrt(||v||^2 − ||P v||^2).
+    // A small mean residual = the projection captures the manifold (tight
+    // bound); a large one = wide UB (the random-basis regime at high dim).
+    const float* basis1() const { return P1_; }     // [stage1_dim × dim]
+    const float* basis2() const { return P2_; }     // [stage2_dim × dim] or nullptr
+    const float* residuals1() const { return e1_; } // [n]
+    const float* residuals2() const { return e2_; } // [n] or nullptr
+
 private:
     // Cauchy-Schwarz upper bound of ⟨v,q⟩ for a vector (Stage-1/2 score).
     float ub_raw(int idx, int layer, const float* pq, float qr, float qm) const;
@@ -172,9 +218,19 @@ private:
     bool built_ = false;
     double build_s_ = 0.0;
 
-    // Stage-1/2 projections (QR-orthogonalized via Modified Gram-Schmidt)
+    // Stage-1/2 projections (QR-orthogonalized via Modified Gram-Schmidt, or
+    // principal directions of the corpus when cfg_.basis == PCACorpus).
     float* P1_ = nullptr;       // [stage1_dim × dim]
     float* P2_ = nullptr;       // [stage2_dim × dim] (nullptr if single-stage)
+
+    // Internal float32 copy of the corpus — used for the UB-Width PCA basis.
+    // Populated only when cfg_.basis == PCACorpus and the corpus is uint8
+    // (the float32 path reuses the caller's buffer via a pointer). NULL when
+    // not needed.
+    float* corpus_f32_ = nullptr;
+    // Owned uint8 copy (build_float32 path) so base_ stays valid for the whole
+    // engine lifetime (the caller's float32 buffer may be released).
+    uint8_t* corpus_u8_owned_ = nullptr;
 
     // Stage-1/2 cached projections + residuals
     int8_t* pr1_ = nullptr;     // [n × stage1_dim] int8 quantized projections

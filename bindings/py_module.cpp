@@ -35,12 +35,20 @@ PYBIND11_MODULE(_winnex_madhava, m) {
         .value("NONE", QuantMode::None)
         .export_values();
 
+    // BasisMode enum — "UB Width" mode
+    py::enum_<BasisMode>(m, "BasisMode")
+        .value("RANDOM", BasisMode::Random)
+        .value("PCA_CORPUS", BasisMode::PCACorpus)
+        .export_values();
+
     py::class_<Config>(m, "Config")
         .def(py::init<>())
         .def_readwrite("dim", &Config::dim)
         .def_readwrite("seed", &Config::seed)
         .def_readwrite("metric", &Config::metric)
         .def_readwrite("quant", &Config::quant)
+        .def_readwrite("basis", &Config::basis)
+        .def_readwrite("pca_sample", &Config::pca_sample)
         .def_readwrite("stage1_dim", &Config::stage1_dim)
         .def_readwrite("stage2_dim", &Config::stage2_dim)
         .def_readwrite("k", &Config::k)
@@ -89,6 +97,34 @@ PYBIND11_MODULE(_winnex_madhava, m) {
                  return n;
              },
              py::arg("arr"))
+        .def("build_float32",
+             [](MadhavaL2& self, py::array_t<float, py::array::c_style | py::array::forcecast> arr) {
+                 auto info = arr.request();
+                 if (info.ndim != 2)
+                     throw std::runtime_error("expected 2D float32 array (n, dim)");
+                 int n = (int)info.shape[0];
+                 self.build_float32((const float*)info.ptr, n);
+                 return n;
+             },
+             py::arg("arr"))
+        .def("set_basis",
+             [](MadhavaL2& self, py::array_t<float, py::array::c_style | py::array::forcecast> p1,
+                 py::object p2) {
+                 auto i1 = p1.request();
+                 int s1 = self.config().stage1_dim;
+                 if (i1.ndim != 2 || i1.shape[0] != s1 || i1.shape[1] != self.dim())
+                     throw std::runtime_error("set_basis: P1 must be (stage1_dim, dim)");
+                 const float* p2ptr = nullptr;
+                 if (!p2.is_none()) {
+                     auto i2 = p2.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>().request();
+                     int s2 = self.config().stage2_dim;
+                     if (i2.ndim != 2 || i2.shape[0] != s2 || i2.shape[1] != self.dim())
+                         throw std::runtime_error("set_basis: P2 must be (stage2_dim, dim)");
+                     p2ptr = (const float*)i2.ptr;
+                 }
+                 self.set_basis((const float*)i1.ptr, p2ptr);
+             },
+             py::arg("P1"), py::arg("P2") = py::none())
         .def("search",
              [](const MadhavaL2& self, py::array_t<float, py::array::c_style | py::array::forcecast> q) {
                  auto info = q.request();
@@ -127,7 +163,36 @@ PYBIND11_MODULE(_winnex_madhava, m) {
         .def("dim", &MadhavaL2::dim)
         .def("config", &MadhavaL2::config)
         .def("build_seconds", &MadhavaL2::build_seconds)
-        .def("built", &MadhavaL2::built);
+        .def("built", &MadhavaL2::built)
+        // UB Width diagnostics
+        .def("basis1", [](const MadhavaL2& self) {
+            int s = self.config().stage1_dim, D = self.dim();
+            py::array_t<float> out(std::vector<py::ssize_t>{(py::ssize_t)s, (py::ssize_t)D});
+            const float* b = self.basis1();
+            if (b) std::memcpy(out.mutable_data(), b, (size_t)s * D * sizeof(float));
+            return out;
+        })
+        .def("basis2", [](const MadhavaL2& self) {
+            int s = self.config().stage2_dim, D = self.dim();
+            if (s <= 0 || !self.basis2()) return py::array_t<float>();
+            py::array_t<float> out(std::vector<py::ssize_t>{(py::ssize_t)s, (py::ssize_t)D});
+            std::memcpy(out.mutable_data(), self.basis2(), (size_t)s * D * sizeof(float));
+            return out;
+        })
+        .def("residuals1", [](const MadhavaL2& self) {
+            int n = self.num_vectors();
+            py::array_t<float> out(n);
+            const float* e = self.residuals1();
+            if (e) std::memcpy(out.mutable_data(), e, (size_t)n * sizeof(float));
+            return out;
+        })
+        .def("residuals2", [](const MadhavaL2& self) {
+            int n = self.num_vectors();
+            py::array_t<float> out(n);
+            const float* e = self.residuals2();
+            if (e) std::memcpy(out.mutable_data(), e, (size_t)n * sizeof(float));
+            return out;
+        });
 
     // SpeedEngine — native speed mode (QKᵀ matmul: CUDA if available, else CPU)
     py::class_<SpeedEngine>(m, "SpeedEngine")

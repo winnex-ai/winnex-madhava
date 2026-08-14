@@ -81,7 +81,7 @@ recall_at_k = _native.recall_at_k
 ndcg_at_k = _native.ndcg_at_k
 read_bigann_groundtruth = _native.read_bigann_groundtruth
 
-__version__ = "1.8.1"
+__version__ = "1.8.3"
 __all__ = [
     "Config",
     "SearchResult",
@@ -106,6 +106,8 @@ def build_engine(
     dim: int | None = None,
     metric: str = "cosine",
     quant: str = "int8",
+    basis: str = "random",  # "random" (default) or "pca_corpus" (UB Width)
+    pca_sample: int = 10000,
     stage1_dim: int = 64,
     stage2_dim: int = 128,
     k: int = 10,
@@ -148,6 +150,15 @@ def build_engine(
         'cosine' (stack default: normalized embeddings) or 'l2' (raw uint8).
     quant : str, default 'int8'
         'int8' (fast, memory-light) or 'none' (float32 exact).
+    basis : str, default 'random'
+        Projection basis. 'random' = QR-orthogonalized random Gaussian via MGS
+        (the default/historical mode). 'pca_corpus' = UB Width mode: the
+        projection is aligned to the principal directions of the corpus, so the
+        residual e(v) = sqrt(||v||^2 - ||P v||^2) shrinks to the manifold
+        residual and the bound stays tight at high dimension (d ~ 1536), where
+        the random basis degenerates to exhaustive search.
+    pca_sample : int, default 10000
+        Max vectors used to estimate the PCA basis (UB Width mode).
     stage1_dim : int, default 64
         Stage-1 QR projection (wide bound B1).
     stage2_dim : int, default 128
@@ -205,6 +216,11 @@ def build_engine(
     is_cosine = metric.lower() == "cosine"
     cfg.metric = Metric.COSINE if is_cosine else Metric.L2
     cfg.quant = QuantMode.INT8 if quant.lower() == "int8" else QuantMode.NONE
+    # UB Width mode: basis="pca_corpus" aligns the projection to the corpus'
+    # principal directions (tight bound at high dimension); "random" (default)
+    # keeps the historical QR-MGS behavior.
+    cfg.basis = BasisMode.PCA_CORPUS if basis.lower() == "pca_corpus" else BasisMode.RANDOM
+    cfg.pca_sample = int(pca_sample)
     cfg.stage1_dim = int(stage1_dim)
     cfg.stage2_dim = int(stage2_dim)
     cfg.k = int(k)

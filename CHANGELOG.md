@@ -5,6 +5,24 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.3] — 2026-08-14
+
+### 🔴 Fix (P0): `build_float32` truncated unit-norm embeddings to zero
+
+`build_float32` converted float32 embeddings to uint8 with
+`uint8 = clamp(v, 0, 255)`. For a unit-norm embedding (values in [-1, 1]) this
+maps nearly all values to 0 — the engine then sees all-zero vectors and recall
+collapses to 0. **Fixed**: the affine map `uint8 = (v + 1) * 127.5` preserves
+the geometry.
+
+### 🔴 Fix (P0): `set_basis` desynchronized the basis and the cached projections
+
+`set_basis` replaced the projection basis (`P1_`) but did not recompute the
+per-vector projections (`pr1_f_`) that `ub_raw` uses. The bound then combined
+the new basis (query side) with the old basis' projections (corpus side) — a
+garbage bound, measured recall 0.05. **Fixed**: `set_basis` now recomputes the
+projections and residuals consistently over the real float32 corpus.
+
 ## [1.8.2] — 2026-08-11
 
 ### 🔴 Fix (P0): early_exit default for cosine — recall 1.0 → 0.10 in high dimension

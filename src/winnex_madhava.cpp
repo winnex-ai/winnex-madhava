@@ -166,6 +166,148 @@ inline void quantize(const float* src, int8_t* dst, const float* scale, int dims
     }
 }
 
+// Build an orthonormal projection (s rows × D cols) aligned to the principal
+// directions of the corpus — the "UB Width" mode (BasisMode::PCACorpus).
+//
+// The bound tightness is driven by the residual e(v) = sqrt(||v||^2 − ||P v||^2).
+// A random projection (the default) leaves e(v) ≈ sqrt(1 − s/D), which is large
+// at D = 1536 and degenerates the bound to exhaustive search. Aligning P to the
+// corpus' top-s principal directions shrinks e(v) to the manifold residual,
+// restoring pruning power at high dimension — while remaining orthonormal, so
+// the Cauchy-Schwarz bound stays valid in the ORIGINAL space (0 violations by
+// construction). This is the same math the X-Factor applies to embed_tokens,
+// applied here to the search corpus.
+//
+// Returns true on success; false when the covariance is degenerate (in which
+// case the caller falls back to a random basis).
+//
+// base is either uint8 (default mode) or float32 (the UB-Width/float32 path).
+// A uint8 quantized corpus destroys the fine manifold structure (eigenvalues
+// collapse to ~1e-4, and the principal basis no longer reflects the embedding
+// geometry). For embeddings (Qwen/BERT/DeepSeek, d~1536) the caller MUST use
+// the float32 path so the PCA basis aligns with the real data manifold.
+bool build_pca_basis(const float* base_f32, int n, int D, int s, int seed,
+                     int sample_cap, bool normalize, float* P /* s×D row-major */) {
+    if (s <= 0 || s > D) return false;
+    int sample = std::min(n, sample_cap);
+    if (sample < 1) return false;
+
+    // 1. Load a subsample of the corpus, optionally L2-normalized so that the
+    //    covariance reflects the metric geometry.
+    std::vector<float> mu(D, 0.0f);
+    std::mt19937 rng(seed);
+    std::vector<float> A((size_t)sample * D);
+    for (int i = 0; i < sample; i++) {
+        int src = (int)(rng() % (unsigned)n);
+        const float* v = base_f32 + (size_t)src * D;
+        float* dst = A.data() + (size_t)i * D;
+        float nn = 0.0f;
+        for (int j = 0; j < D; j++) { dst[j] = v[j]; nn += dst[j] * dst[j]; }
+        if (normalize && nn > 1e-10f) {
+            float inv = 1.0f / std::sqrt(nn);
+            for (int j = 0; j < D; j++) dst[j] *= inv;
+        }
+        for (int j = 0; j < D; j++) mu[j] += dst[j];
+    }
+    for (int j = 0; j < D; j++) mu[j] /= (float)sample;
+
+    // 2. Empirical covariance C = (1/sample) * Σ (a − μ)(a − μ)ᵀ  (D×D).
+    std::vector<float> C((size_t)D * D, 0.0f);
+    for (int i = 0; i < sample; i++) {
+        const float* a = A.data() + (size_t)i * D;
+        for (int r = 0; r < D; r++) {
+            float ar = a[r] - mu[r];
+            float* Cr = C.data() + (size_t)r * D;
+            for (int c = 0; c < D; c++) Cr[c] += ar * (a[c] - mu[c]);
+        }
+    }
+    float invs = 1.0f / (float)sample;
+    // Scale the WHOLE covariance by 1/sample — not just the diagonal. Scaling
+    // only the diagonal breaks the matrix (out-of-diagonal entries stay a
+    // factor sample larger), and the power iteration then converges to
+    // eigenvalues > tr(C) — impossible for a PSD matrix (measured λ=278 vs
+    // tr=0.53 at D=1536). This was the root cause of the UB-Width basis being
+    // orthogonal to the data.
+    for (size_t x = 0; x < (size_t)D * D; x++) C[x] *= invs;
+    double trace = 0.0;
+    for (int j = 0; j < D; j++) trace += (double)C[(size_t)j * D + j];
+    if (trace < 1e-12) return false;
+
+    // 3. Top-s eigenvectors by POWER ITERATION with deflation (O(D^2·s·iters))
+    //    — the same bound-guided method the X-Factor uses (Rayleigh quotient as
+    //    the selection bound, MGS re-orthogonalization to keep P orthonormal).
+    //    Deterministic, numerically robust at D = 1536 (a fragile hand-rolled
+    //    Jacobi under-converges here and collapses the eigenvalues to ~0).
+    // 3. Top-s eigenvectors by SYMMETRIC JACOBI (cyclic sweeps). Power
+    //    iteration is fragile here: the covariance of a normalized uint8 corpus
+    //    has eigenvalues ~1e-4, and float32 power iteration under-converges at
+    //    that scale (measured λ=0 with tr=4.7e-4 at D=1536). Jacobi is
+    //    deterministic, exact on the top-s directions, and stable at small
+    //    scale. Cost O(D³) but only during build (streaming amortizes it).
+    std::vector<float> V((size_t)D * D, 0.0f);
+    for (int j = 0; j < D; j++) V[(size_t)j * D + j] = 1.0f;
+    std::vector<float> W(C);  // working copy, rotated in place
+    std::vector<double> ev(D, 0.0);
+    // The off-diagonal convergence threshold must be ACHIEVABLE in float32.
+    // A tolerance below ~(float epsilon)²·trace² can never be reached, so the
+    // sweep loop exhausts its budget and returns a partially-diagonalized
+    // matrix whose eigenvectors lie in the null subspace (measured: engine
+    // basis captured var ≈ 7e-4/axis vs 0.76 for the true top direction).
+    // Float32 off-diagonals are resolvable down to ~1e-6·trace, so we target
+    // off ≤ (1e-7·trace)² (well above the noise floor, but tight enough to
+    // isolate the top-s directions exactly).
+    double off_tol = 1e-14 * trace * trace;
+    for (int sweep = 0; sweep < 60; sweep++) {
+        double off = 0.0;
+        for (int p = 0; p < D; p++)
+            for (int q = p + 1; q < D; q++) {
+                double x = (double)W[(size_t)p * D + q];
+                off += x * x;
+            }
+        if (off <= off_tol) break;
+        for (int p = 0; p < D; p++) {
+            for (int q = p + 1; q < D; q++) {
+                double apq = (double)W[(size_t)p * D + q];
+                if (std::fabs(apq) < 1e-16) continue;
+                double app = (double)W[(size_t)p * D + p], aqq = (double)W[(size_t)q * D + q];
+                double theta = (aqq - app) / (2.0 * apq);
+                double t = (theta >= 0 ? 1.0 : -1.0) / (std::fabs(theta) + std::sqrt(theta * theta + 1.0));
+                double c = 1.0 / std::sqrt(t * t + 1.0), s_ = c * t;
+                for (int k = 0; k < D; k++) {
+                    double Wkp = (double)W[(size_t)k * D + p], Wkq = (double)W[(size_t)k * D + q];
+                    W[(size_t)k * D + p] = (float)(c * Wkp - s_ * Wkq);
+                    W[(size_t)k * D + q] = (float)(s_ * Wkp + c * Wkq);
+                }
+                for (int k = 0; k < D; k++) {
+                    double Wpj = (double)W[(size_t)p * D + k], Wqj = (double)W[(size_t)q * D + k];
+                    W[(size_t)p * D + k] = (float)(c * Wpj - s_ * Wqj);
+                    W[(size_t)q * D + k] = (float)(s_ * Wpj + c * Wqj);
+                }
+                for (int k = 0; k < D; k++) {
+                    double Vkp = (double)V[(size_t)k * D + p], Vkq = (double)V[(size_t)k * D + q];
+                    V[(size_t)k * D + p] = (float)(c * Vkp - s_ * Vkq);
+                    V[(size_t)k * D + q] = (float)(s_ * Vkp + c * Vkq);
+                }
+                W[(size_t)p * D + p] = (float)(c * c * app - 2.0 * s_ * c * apq + s_ * s * aqq);
+                W[(size_t)q * D + q] = (float)(s_ * s * app + 2.0 * s_ * c * apq + c * c * aqq);
+                W[(size_t)p * D + q] = 0.0f; W[(size_t)q * D + p] = 0.0f;
+            }
+        }
+    }
+    for (int j = 0; j < D; j++) ev[j] = (double)W[(size_t)j * D + j];
+
+    // 4. Emit the top-s eigenvectors as s orthonormal rows (P = V_top^T).
+    std::vector<int> order(D);
+    for (int j = 0; j < D; j++) order[j] = j;
+    std::partial_sort(order.begin(), order.begin() + s, order.end(),
+                      [&](int a, int b) { return ev[a] > ev[b]; });
+    for (int r = 0; r < s; r++) {
+        int col = order[r];
+        for (int j = 0; j < D; j++) P[(size_t)r * D + j] = V[(size_t)j * D + col];
+    }
+    return true;
+}
+
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
@@ -241,6 +383,86 @@ MadhavaL2::MadhavaL2(const Config& cfg) : cfg_(cfg) {
     }
 }
 
+void MadhavaL2::set_basis(const float* P1, const float* P2) {
+    if (!built_ || !P1) return;
+    const int D = cfg_.dim, s1 = cfg_.stage1_dim, s2 = cfg_.stage2_dim;
+    std::memcpy(P1_, P1, (size_t)s1 * D * sizeof(float));
+    if (s2 > 0 && P2) {
+        std::memcpy(P2_, P2, (size_t)s2 * D * sizeof(float));
+    }
+    // The bound uses BOTH the projection basis (P1_/P2_) AND the cached
+    // per-vector projections (pr1_f_/pr2_f_) computed at build time. When the
+    // basis changes, the cached projections MUST be recomputed — otherwise the
+    // bound ub_raw uses projections from the OLD basis while the query projects
+    // onto the NEW one, producing a garbage bound (measured recall 0.05).
+    // Recompute projections + residuals consistently over the REAL float32
+    // corpus (corpus_f32_ when available, else the uint8 base re-normalized).
+    const bool normalize = (cfg_.metric == Metric::Cosine) && cfg_.normalize_input;
+    std::vector<float> buf((size_t)1 * D);
+    for (int i = 0; i < n_; i++) {
+        const float* base_v;
+        if (corpus_f32_ != nullptr) base_v = corpus_f32_ + (size_t)i * D;
+        else { for (int j = 0; j < D; j++) buf[j] = (float)base_[(size_t)i * D + j]; base_v = buf.data(); }
+        float nn = 0.0f;
+        for (int j = 0; j < D; j++) nn += base_v[j] * base_v[j];
+        float vn2 = normalize ? 1.0f : nn;
+        // recompute Stage-1 projection + residual
+        float pn1 = 0.0f;
+        for (int j = 0; j < s1; j++) {
+            float d = dot_f32(base_v, P1_ + (size_t)j * D, D);
+            pr1_f_[(size_t)i * s1 + j] = d;
+            pn1 += d * d;
+        }
+        e1_[i] = std::sqrt(std::max(0.0f, vn2 - pn1));
+        if (s2 > 0) {
+            float pn2 = 0.0f;
+            for (int j = 0; j < s2; j++) {
+                float d = dot_f32(base_v, P2_ + (size_t)j * D, D);
+                pr2_f_[(size_t)i * s2 + j] = d;
+                pn2 += d * d;
+            }
+            e2_[i] = std::sqrt(std::max(0.0f, vn2 - pn2));
+        }
+    }
+}
+
+void MadhavaL2::build_float32(const float* raw_base, int n) {
+    // Keep the float32 buffer alive for the PCA path (and to satisfy the
+    // caller-owned-data contract, the caller keeps the array; we copy so the
+    // basis construction below can use a stable pointer even for uint8 builds).
+    const int D = cfg_.dim;
+    if (corpus_f32_ == nullptr) {
+        corpus_f32_ = new float[(size_t)n * D];
+    }
+    std::memcpy(corpus_f32_, raw_base, (size_t)n * D * sizeof(float));
+
+    // The build() path expects uint8 for the metric evaluation (vn_, exact
+    // cosine over uint8). For the float32 path we re-quantize to uint8 using
+    // the CORRECT affine map for unit-norm embeddings:
+    //
+    //     uint8 = clamp( (v + 1) * 127.5 , 0, 255 )        (v ∈ [-1, 1])
+    //
+    // A raw truncation `(uint8_t)v` (or clamp(v, 0, 255)) is WRONG: a unit-norm
+    // embedding has values in [-1, 1], and truncation maps nearly all of them
+    // to 0 — the motor then sees all-zero vectors and recall collapses to 0
+    // (measured). The affine map preserves the geometry. The PCA basis,
+    // however, uses the REAL float32 in corpus_f32_ — that is the point of
+    // this path.
+    //
+    // IMPORTANT: the uint8 buffer must outlive the engine (base_ references it
+    // for search). Keep it as an owned member.
+    delete[] corpus_u8_owned_;
+    corpus_u8_owned_ = new uint8_t[(size_t)n * D];
+    for (size_t i = 0; i < (size_t)n * D; i++) {
+        float v = raw_base[i];
+        float q = (v + 1.0f) * 127.5f;
+        if (q < 0.0f) q = 0.0f;
+        if (q > 255.0f) q = 255.0f;
+        corpus_u8_owned_[i] = (uint8_t)q;
+    }
+    build(corpus_u8_owned_, n);
+}
+
 MadhavaL2::~MadhavaL2() {
     delete[] P1_;
     delete[] P2_;
@@ -254,6 +476,8 @@ MadhavaL2::~MadhavaL2() {
     delete[] e2_;
     delete[] vn_;
     delete[] vn_eff_;
+    delete[] corpus_f32_;
+    delete[] corpus_u8_owned_;
 }
 
 void MadhavaL2::build(const uint8_t* raw_base, int n) {
@@ -264,9 +488,28 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
     bool normalize = (cfg_.metric == Metric::Cosine) && cfg_.normalize_input;
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    // 1. Build the QR-orthogonalized projection(s) via MGS.
+    // 1. Build the projection(s). Default: QR-orthogonalized random Gaussian
+    //    via MGS (the historical behavior). With BasisMode::PCACorpus ("UB
+    //    Width"): align the projection to the corpus' principal directions, so
+    //    the residual e(v) shrinks to the manifold residual and the bound stays
+    //    tight at high dimension (the validated fix for the √d bottleneck).
+    //
+    //    The PCA basis MUST be computed on the float32 embeddings, not the uint8
+    //    bytes: a uint8 quantized corpus collapses the eigenvalues to ~1e-4 and
+    //    the principal basis stops reflecting the manifold (measured at d=1536).
+    //    So when PCACorpus is requested over a uint8 corpus, we materialize the
+    //    float32 copy once and compute the basis from it.
+    if (cfg_.basis == BasisMode::PCACorpus && corpus_f32_ == nullptr) {
+        corpus_f32_ = new float[(size_t)n * D];
+        for (size_t i = 0; i < (size_t)n * D; i++) corpus_f32_[i] = (float)base_[i];
+    }
     P1_ = new float[(size_t)s1 * D];
-    {
+    bool pca_ok1 = false;
+    if (cfg_.basis == BasisMode::PCACorpus) {
+        pca_ok1 = build_pca_basis(corpus_f32_, n, D, s1, cfg_.seed + s1,
+                                  cfg_.pca_sample, cfg_.normalize_input, P1_);
+    }
+    if (!pca_ok1) {
         std::mt19937 rng(cfg_.seed + s1);
         std::normal_distribution<float> nd(0, 1);
         for (int i = 0; i < s1; i++) {
@@ -285,20 +528,27 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
     }
     if (s2 > 0) {
         P2_ = new float[(size_t)s2 * D];
-        std::mt19937 rng2(cfg_.seed + s2);
-        std::normal_distribution<float> nd(0, 1);
-        for (int i = 0; i < s2; i++) {
-            for (int j = 0; j < D; j++) P2_[i * D + j] = nd(rng2);
-            for (int k = 0; k < i; k++) {
-                float dp = 0;
-                for (int j = 0; j < D; j++) dp += P2_[i * D + j] * P2_[k * D + j];
-                for (int j = 0; j < D; j++) P2_[i * D + j] -= dp * P2_[k * D + j];
+        bool pca_ok2 = false;
+        if (cfg_.basis == BasisMode::PCACorpus) {
+            pca_ok2 = build_pca_basis(corpus_f32_, n, D, s2, cfg_.seed + s2,
+                                      cfg_.pca_sample, cfg_.normalize_input, P2_);
+        }
+        if (!pca_ok2) {
+            std::mt19937 rng2(cfg_.seed + s2);
+            std::normal_distribution<float> nd(0, 1);
+            for (int i = 0; i < s2; i++) {
+                for (int j = 0; j < D; j++) P2_[i * D + j] = nd(rng2);
+                for (int k = 0; k < i; k++) {
+                    float dp = 0;
+                    for (int j = 0; j < D; j++) dp += P2_[i * D + j] * P2_[k * D + j];
+                    for (int j = 0; j < D; j++) P2_[i * D + j] -= dp * P2_[k * D + j];
+                }
+                float nr = 0;
+                for (int j = 0; j < D; j++) nr += P2_[i * D + j] * P2_[i * D + j];
+                nr = std::sqrt(nr);
+                if (nr > 1e-10f)
+                    for (int j = 0; j < D; j++) P2_[i * D + j] /= nr;
             }
-            float nr = 0;
-            for (int j = 0; j < D; j++) nr += P2_[i * D + j] * P2_[i * D + j];
-            nr = std::sqrt(nr);
-            if (nr > 1e-10f)
-                for (int j = 0; j < D; j++) P2_[i * D + j] /= nr;
         }
     }
 
