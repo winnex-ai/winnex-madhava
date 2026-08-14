@@ -5,6 +5,15 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.4] — 2026-08-14
+
+### 🔴 Fix (P0): `build_engine(basis="pca_corpus")` raised `NameError: BasisMode`
+
+`build_engine` referenced `BasisMode` but the Python module did not import
+it. `build_engine(corpus, basis="pca_corpus")` — the UB Width mode — crashed
+with `NameError`. **Fixed**: `BasisMode` is now re-exported from the native
+extension and added to `__all__`.
+
 ## [1.8.3] — 2026-08-14
 
 ### 🔴 Fix (P0): `build_float32` truncated unit-norm embeddings to zero

@@ -77,11 +77,12 @@ SearchResult = _native.SearchResult
 MadhavaL2 = _native.MadhavaL2
 Metric = _native.Metric
 QuantMode = _native.QuantMode
+BasisMode = _native.BasisMode
 recall_at_k = _native.recall_at_k
 ndcg_at_k = _native.ndcg_at_k
 read_bigann_groundtruth = _native.read_bigann_groundtruth
 
-__version__ = "1.8.3"
+__version__ = "1.8.4"
 __all__ = [
     "Config",
     "SearchResult",
@@ -90,6 +91,7 @@ __all__ = [
     "MadhavaSpeed",
     "Metric",
     "QuantMode",
+    "BasisMode",
     "recall_at_k",
     "ndcg_at_k",
     "read_bigann_groundtruth",
