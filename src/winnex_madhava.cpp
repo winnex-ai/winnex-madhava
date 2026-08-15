@@ -602,6 +602,17 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
                 for (int j = 0; j < D; j++) nn += ch[(size_t)i * D + j] * ch[(size_t)i * D + j];
                 vn_[p + i] = std::sqrt(nn);
                 vn_eff_[p + i] = normalize ? 1.0f : vn_[p + i];
+                // SPACE MISMATCH FIX (2026-08-15): the residual e(v) =
+                // sqrt(||v||^2 - ||P v||^2) assumes v is unit-norm when
+                // normalize=true (vn_eff_=1.0). But corpus_f32_ may hold RAW
+                // values (e.g. uint8 0-255 cast to float) that are NOT
+                // unit-norm. Without normalizing v here, pn1 = ||P v||^2 >> 1
+                // and e(v) collapses to 0 — the BIGANN space mismatch. So when
+                // normalize=true, divide v by its norm so vn_eff_=1.0 is exact.
+                if (normalize && nn > 1e-10f) {
+                    float inv = 1.0f / std::sqrt(nn);
+                    for (int j = 0; j < D; j++) ch[(size_t)i * D + j] *= inv;
+                }
             }
         } else {
             for (int i = 0; i < nt; i++) {
@@ -961,7 +972,13 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
             }
         }
         out.pruned_by_bound = n_bound_pruned;
-        out.pruned_by_prefilter = (long long)N - n_exact - n_bound_pruned;
+        // The prefilter count is what the fixed cutoff discarded WITHOUT a
+        // per-vector certificate. Clamp to [0, N]: n_exact (the survivors the
+        // post-filter scored exactly) and n_bound_pruned (those the bound proved
+        // outside top-K) are not disjoint, so the raw subtraction can be
+        // negative. The clamp keeps the diagnostic honest.
+        out.pruned_by_prefilter = std::max<long long>(0,
+            (long long)N - n_exact - n_bound_pruned);
 
         if (cfg_.early_exit && (int)heap.size() == K) {
             // early_exit: the heap holds the top-K by exact score in the

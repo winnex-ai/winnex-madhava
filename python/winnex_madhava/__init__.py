@@ -298,6 +298,18 @@ def build_engine(
             require_gpu=require_gpu,
         )
 
+    # For UB Width (basis="pca_corpus") we supply the PCA basis computed by a
+    # NUMERICALLY ROBUST eigendecomposition — LAPACK (numpy eigh) — per the
+    # WINNEX UB Width paper (DOI 10.5281/zenodo.21939495, §7): "The base PCA is
+    # computed by LAPACK eigh and supplied via set_basis". We therefore build the
+    # motor with basis=Random (a fast MGS projection, no internal eigensolver) so
+    # the O(D²·s) power-iteration build_pca_basis does NOT run — it was the 100s+
+    # ingestion bottleneck and it under-converged for the spectrum tail (13-36%
+    # of variance vs 94% for LAPACK). set_basis(P1) then supplies the LAPACK base.
+    want_pca_lapack = basis.lower() == "pca_corpus" and is_float_corpus
+    if want_pca_lapack:
+        cfg.basis = BasisMode.RANDOM  # build fast; the LAPACK base replaces it below
+
     engine = MadhavaL2(cfg)
 
     if is_float_corpus:
@@ -306,16 +318,7 @@ def build_engine(
         arr32 = np.ascontiguousarray(arr, dtype=np.float32)
         engine.build_float32(arr32)
 
-        # UB Width mode (basis="pca_corpus"): supply the PCA basis computed by a
-        # NUMERICALLY ROBUST eigendecomposition — LAPACK (numpy eigh) — per the
-        # WINNEX UB Width paper (DOI 10.5281/zenodo.21939495, §7): "The base PCA
-        # is computed by LAPACK eigh and supplied via set_basis". A hand-rolled
-        # power iteration in float32 under-converges for the spectrum tail
-        # (captures ~13-36% of the variance vs ~94% for LAPACK) and is O(D²·s)
-        # per vector — the 110s build. LAPACK is exact, fast, and captures the
-        # full manifold variance, so e(v) tightens to the manifold residual at
-        # d = 1536 and the bound recovers pruning power.
-        if basis.lower() == "pca_corpus":
+        if want_pca_lapack:
             A = arr.astype(np.float64)
             if cfg.normalize_input:
                 norms = np.linalg.norm(A, axis=1, keepdims=True)

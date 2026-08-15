@@ -185,15 +185,28 @@ PYBIND11_MODULE(_winnex_madhava, m) {
         .def("residuals1", [](const MadhavaL2& self) {
             int n = self.num_vectors();
             py::array_t<float> out(n);
+            float* dst = out.mutable_data();
             const float* e = self.residuals1();
-            if (e) std::memcpy(out.mutable_data(), e, (size_t)n * sizeof(float));
+            if (e) {
+                std::memcpy(dst, e, (size_t)n * sizeof(float));
+            } else {
+                // e1_ not populated (e.g. k >= d, projection is complete):
+                // e(v) = sqrt(1 - ||P v||^2) = 0 by construction. Return zeros
+                // instead of an uninitialized array.
+                std::memset(dst, 0, (size_t)n * sizeof(float));
+            }
             return out;
         })
         .def("residuals2", [](const MadhavaL2& self) {
             int n = self.num_vectors();
             py::array_t<float> out(n);
+            float* dst = out.mutable_data();
             const float* e = self.residuals2();
-            if (e) std::memcpy(out.mutable_data(), e, (size_t)n * sizeof(float));
+            if (e) {
+                std::memcpy(dst, e, (size_t)n * sizeof(float));
+            } else {
+                std::memset(dst, 0, (size_t)n * sizeof(float));
+            }
             return out;
         });
 
