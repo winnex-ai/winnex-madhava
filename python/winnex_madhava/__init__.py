@@ -82,7 +82,7 @@ recall_at_k = _native.recall_at_k
 ndcg_at_k = _native.ndcg_at_k
 read_bigann_groundtruth = _native.read_bigann_groundtruth
 
-__version__ = "1.8.4"
+__version__ = "1.8.5"
 __all__ = [
     "Config",
     "SearchResult",
@@ -206,13 +206,18 @@ def build_engine(
     if dim is None:
         dim = arr.shape[1]
     is_float32_corpus = arr.dtype == np.float32
+    want_pca = basis.lower() == "pca_corpus"
     # hybrid and speed modes accept float32 embeddings (cosine); only the
-    # native C++ default mode requires uint8 raw bytes.
+    # native C++ default mode requires uint8 raw bytes. For UB Width
+    # (basis="pca_corpus") with float32 embeddings, PRESERVE the float32 —
+    # the C++ engine needs it to compute the PCA basis and residual in the
+    # float32 manifold (converting to uint8 here destroys it, e(v)→1.0).
     if not (hybrid or speed) and not is_float32_corpus:
         arr = np.ascontiguousarray(arr, dtype=np.uint8)
-    elif not (hybrid or speed):
+    elif not (hybrid or speed) and not want_pca:
         # default mode with float32: the C++ engine is uint8 (BIGANN-style).
         arr = np.ascontiguousarray(arr, dtype=np.uint8)
+    # (for want_pca with float32, arr stays float32 → build_float32 path below)
     cfg = Config()
     cfg.dim = int(dim)
     is_cosine = metric.lower() == "cosine"
@@ -296,6 +301,16 @@ def build_engine(
         )
 
     engine = MadhavaL2(cfg)
+
+    # UB Width mode (basis="pca_corpus") with float32 embeddings: use the
+    # float32 build path so the C++ engine computes the PCA basis from the
+    # REAL float32 corpus (build_pca_basis uses corpus_f32_) and the residuals
+    # reflect the true projection. The engine computes everything in C++; the
+    # Python layer only forwards the corpus (no numpy PCA, no set_basis).
+    if basis.lower() == "pca_corpus" and is_float32_corpus:
+        engine.build_float32(np.ascontiguousarray(arr))
+        return _attach_buffer(engine, arr)
+
     n = engine.build_numpy(arr)
     return _attach_buffer(engine, arr)
 

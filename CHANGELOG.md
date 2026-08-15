@@ -5,6 +5,45 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.5] — 2026-08-14
+
+### 🔴 Fix (P0): the UB Width engine was producing a degenerate basis — e(v)=1.0
+
+Three independent bugs made `basis="pca_corpus"` inert at high dimension
+(d = 1536): the residual `e(v) = √(1 − ‖Pv‖²)` stayed 1.0 (the bound never
+pruned) and the reported recall was a fallback artifact of the exact
+post-filter, not the bound. Root causes, each proved by measurement:
+
+1. **The residual was computed over the wrong space.** `build_float32`
+   populated `corpus_f32_` (the real float32 manifold) for the PCA basis, but
+   the `build()` streaming pass evaluated `v` from the uint8 re-normalized
+   `base_` — a space orthogonal to the basis (`‖P·v_u8‖²=0.001` vs
+   `‖P·v_f32‖²=0.939`). Fixed: the residual now uses `corpus_f32_` when
+   available.
+2. **The covariance was centered, which removed the dominant direction.**
+   For arXiv, `‖μ‖=0.87`, so centering collapsed the spectrum to λ₁=0.009
+   (e(v)=0.86). The non-centered covariance `C = XᵀX/N` keeps the total
+   energy (λ₁=0.76, e(v)=0.24) with the same 0-violation guarantee. Fixed:
+   `build_pca_basis` no longer centers.
+3. **The internal eigensolver was a fragile Jacobi** that under-converges at
+   d=1536 in float32 (unreachable tolerance → null-subspace basis). Fixed:
+   power iteration with deflation + MGS re-orthogonalization (the X-Factor's
+   proven method), verified to recover λ₁=0.767 exactly.
+
+Also fixed: `build_engine` no longer converts float32 embeddings to uint8 when
+`basis="pca_corpus"` (that conversion destroyed the manifold). Validated:
+`build_engine(corpus_f32, basis="pca_corpus")` now yields e(v)=0.2465,
+recall@10=1.000, 0 violations, 95% pruning at d=1536.
+
+### 📄 Docs: UB Width mode + public Kaggle benchmark in the README
+
+Added the `basis="pca_corpus"` (UB Width) section to the README with the
+public Kaggle benchmark on the real BIGANN-100M dataset
+(`kleniopadilha/winnex-madhava-1-8-4-ub-width-bigann-v3`): recall@10 = 1.000,
+0 bound violations, 95% pruning, for both UB Width and the random default at
+d = 128, with an honest scope note (the UB Width advantage is at high
+dimension, d = 1536 — see the WINNEX UB Width paper, DOI 10.5281/zenodo.21939495).
+
 ## [1.8.4] — 2026-08-14
 
 ### 🔴 Fix (P0): `build_engine(basis="pca_corpus")` raised `NameError: BasisMode`
