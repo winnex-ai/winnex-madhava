@@ -1,8 +1,8 @@
 {
-  "id": "kleniopadilha/winnex-madhava-1-8-5-ub-width-arxiv-honesto",
+  "id": "kleniopadilha/winnex-madhava-1-8-6-pypi-multi-dataset",
   "id_no": 0,
-  "title": "winnex madhava 1 8 5 ub width arxiv honesto",
-  "code_file": "ubwidth_arxiv_benchmark.py",
+  "title": "winnex madhava 1 8 6 pypi multi dataset",
+  "code_file": "benchmark_madhava_pypi.py",
   "language": "python",
   "kernel_type": "script",
   "is_private": true,
@@ -11,6 +11,8 @@
   "model_strategy": "none",
   "competition_sources": [],
   "dataset_sources": [
+    "rtatman/glove-global-vectors-for-word-representation",
+    "shurangwu/bigann-100m",
     "tomtum/openai-arxiv-embeddings"
   ],
   "kernel_sources": []

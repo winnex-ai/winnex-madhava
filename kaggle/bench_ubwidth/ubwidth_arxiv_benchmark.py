@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-UB Width benchmark — winnex-madhava 1.8.5 on real d=1536 arXiv embeddings.
+UB Width benchmark — winnex-madhava 1.8.6 on real d=1536 arXiv embeddings.
 
 HONEST PROTOCOL — the motor C++ is the ONLY thing being measured.
   - Installs winnex-madhava from PyPI (the released package).
@@ -25,7 +25,7 @@ print("=" * 70, flush=True)
 # --- 1. Install from PyPI (the released package) ---
 print("\n[1] Installing winnex-madhava from PyPI...", flush=True)
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
-                       "--no-cache-dir", "winnex-madhava==1.8.5"])
+                       "--no-cache-dir", "winnex-madhava==1.8.6"])
 import winnex_madhava as wm
 print(f"    winnex-madhava {wm.__version__} installed from PyPI", flush=True)
 

@@ -1,0 +1,60 @@
+{
+  "package": "winnex-madhava",
+  "version": "1.8.6",
+  "datasets": {
+    "glove_d100": {
+      "random": {
+        "recall@10": 1.0,
+        "bound_violations": 0,
+        "prune_pct": 95.0,
+        "latency_ms": 1.18,
+        "build_s": 0.1,
+        "residual_e_v": null
+      },
+      "pca_corpus": {
+        "recall@10": 1.0,
+        "bound_violations": 0,
+        "prune_pct": 95.0,
+        "latency_ms": 1.56,
+        "build_s": 0.4,
+        "residual_e_v": null
+      }
+    },
+    "bigann_d128": {
+      "random": {
+        "recall@10": 1.0,
+        "bound_violations": 0,
+        "prune_pct": 95.0,
+        "latency_ms": 1.22,
+        "build_s": 0.1,
+        "residual_e_v": 0.0005
+      },
+      "pca_corpus": {
+        "recall@10": 1.0,
+        "bound_violations": 0,
+        "prune_pct": 95.0,
+        "latency_ms": 1.19,
+        "build_s": 0.4,
+        "residual_e_v": null
+      }
+    },
+    "arxiv_d1536": {
+      "random": {
+        "recall@10": 0.995,
+        "bound_violations": 0,
+        "prune_pct": 95.0,
+        "latency_ms": 3.32,
+        "build_s": 1.6,
+        "residual_e_v": 0.9674
+      },
+      "pca_corpus": {
+        "recall@10": 1.0,
+        "bound_violations": 0,
+        "prune_pct": 95.0,
+        "latency_ms": 3.71,
+        "build_s": 103.9,
+        "residual_e_v": 0.793
+      }
+    }
+  }
+}

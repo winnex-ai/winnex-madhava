@@ -1,0 +1,31 @@
+{
+  "package": "winnex-madhava",
+  "version": "1.8.6",
+  "installed_from": "PyPI",
+  "dataset": "tomtum/openai-arxiv-embeddings",
+  "dim": 1536,
+  "N": 19900,
+  "NQ": 100,
+  "K": 10,
+  "metric": "cosine",
+  "gt": "the motor's own search_exact on the same query (valid ceiling)",
+  "note": "raw data passed to the motor; no numpy normalization or re-ordering",
+  "results": {
+    "random": {
+      "recall@10": 0.995,
+      "bound_violations": 0,
+      "prune_pct": 95.0,
+      "latency_ms": 3.32,
+      "build_s": 1.6,
+      "residual_e_v": 0.9674
+    },
+    "pca_corpus": {
+      "recall@10": 1.0,
+      "bound_violations": 0,
+      "prune_pct": 95.0,
+      "latency_ms": 3.71,
+      "build_s": 103.9,
+      "residual_e_v": 0.793
+    }
+  }
+}
