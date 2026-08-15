@@ -39,22 +39,34 @@ def find_file(name):
 
 
 def measure(eng, Qn, K=10):
-    """Recall of the motor's search() vs its OWN search_exact(), same query."""
+    """Recall of the motor's search() vs its OWN search_exact(), same query.
+
+    Also captures the HONEST pruning breakdown the motor now reports:
+      pruned_by_bound     — vectors the Cauchy-Schwarz bound PROVED outside
+                            top-K (UB < worst). The real bound-driven pruning.
+      pruned_by_prefilter — vectors cut by the fixed k1_fraction/k2_max
+                            without a per-vector certificate.
+    """
     viol = 0
     surv = 0
     lat = 0.0
     rec = 0.0
+    pb = 0
+    pp = 0
     for j in range(len(Qn)):
         t0 = time.time()
         r = eng.search(Qn[j])
         lat += (time.time() - t0) * 1000
         viol += r.bound_violations
         surv += r.k3
+        pb += getattr(r, "pruned_by_bound", 0) or 0
+        pp += getattr(r, "pruned_by_prefilter", 0) or 0
         r_ex = eng.search_exact(Qn[j])
         rec += sum(1 for i in r.indices if i in r_ex.indices) / K
     resid = eng.residuals1()
     resid1 = float(np.mean(resid)) if len(resid) else None
-    return rec / len(Qn), viol, surv / len(Qn), lat / len(Qn), resid1
+    return (rec / len(Qn), viol, surv / len(Qn), lat / len(Qn), resid1,
+            pb / len(Qn), pp / len(Qn))
 
 
 def run_dataset(name, X, dim):
@@ -71,17 +83,20 @@ def run_dataset(name, X, dim):
                               basis=basis, stage1_dim=min(192, dim),
                               stage2_dim=0, k=K, normalize_input=True)
         tb = time.time() - t0
-        rec, viol, surv, lat, e = measure(eng, Q)
+        rec, viol, surv, lat, e, pb, pp = measure(eng, Q)
         results[basis] = {
             "recall@10": round(rec, 4),
             "bound_violations": int(viol),
-            "prune_pct": round((1 - surv / N) * 100, 1),
+            "pruned_by_bound_pct": round(pb / N * 100, 1),       # the REAL bound pruning
+            "pruned_by_prefilter_pct": round(pp / N * 100, 1),   # the fixed-cutoff pruning
+            "survivor_pct": round(surv / N * 100, 1),            # what the motor kept (k3)
             "latency_ms": round(lat, 2),
             "build_s": round(tb, 1),
             "residual_e_v": round(e, 4) if e else None,
         }
         print(f"    {basis:12s}: recall@10={rec:.4f}  viol={viol}  "
-              f"prune={(1-surv/N)*100:.1f}%  build={tb:.1f}s  e(v)={e if e else 0:.4f}", flush=True)
+              f"bound_pruned={pb/N*100:.1f}%  prefilter={pp/N*100:.1f}%  "
+              f"build={tb:.1f}s  e(v)={e if e else 0:.4f}", flush=True)
     return {
         "package": "winnex-madhava",
         "version": wm.__version__,

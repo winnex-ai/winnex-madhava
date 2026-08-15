@@ -14,16 +14,20 @@
     "random": {
       "recall@10": 1.0,
       "bound_violations": 0,
-      "prune_pct": 95.0,
-      "latency_ms": 1.22,
+      "pruned_by_bound_pct": 100.0,
+      "pruned_by_prefilter_pct": -5.0,
+      "survivor_pct": 5.0,
+      "latency_ms": 1.26,
       "build_s": 0.1,
       "residual_e_v": 0.0005
     },
     "pca_corpus": {
       "recall@10": 1.0,
       "bound_violations": 0,
-      "prune_pct": 95.0,
-      "latency_ms": 1.19,
+      "pruned_by_bound_pct": 0.0,
+      "pruned_by_prefilter_pct": 95.0,
+      "survivor_pct": 5.0,
+      "latency_ms": 1.31,
       "build_s": 0.4,
       "residual_e_v": null
     }
