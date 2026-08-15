@@ -1,0 +1,17 @@
+{
+  "id": "kleniopadilha/winnex-madhava-1-8-5-ub-width-arxiv-honesto",
+  "id_no": 0,
+  "title": "winnex madhava 1 8 5 ub width arxiv honesto",
+  "code_file": "ubwidth_arxiv_benchmark.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "model_strategy": "none",
+  "competition_sources": [],
+  "dataset_sources": [
+    "tomtum/openai-arxiv-embeddings"
+  ],
+  "kernel_sources": []
+}
