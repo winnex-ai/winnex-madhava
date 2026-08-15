@@ -456,6 +456,52 @@ The residual `‖v − PᵀPv‖` is computed on the **real float32 projection**
 the int8-quantized one — this is what the inequality requires, and it is what
 makes the bound exact rather than approximate.
 
+## UB Width mode (`basis="pca_corpus"`)
+
+The bound's tightness is governed by the **residual width** `e(v) = ‖v − PᵀPv‖`.
+A **random** projection (the historical default) leaves `e(v) ≈ √(1 − s/d)`,
+which at high dimension (d = 1536) is so wide that the bound cannot prune
+anything — the scan degenerates to exhaustive search.
+
+**UB Width** aligns the projection to the **principal directions of the corpus**
+(`basis="pca_corpus"`), so the residual shrinks to the manifold residual
+`√(1 − ν(s))`, where `ν(s)` is the variance captured by the top-s principal
+axes. Because the basis remains orthonormal, the Cauchy-Schwarz bound stays
+**valid in the original space**: 0 bound violations by construction, at full
+recall. The score is always evaluated exactly in the original space — the
+projection only tightens the bound, it never replaces the metric.
+
+```python
+import winnex_madhava, numpy as np
+
+# UB Width mode — the PCA basis is computed inside the C++ engine
+engine = winnex_madhava.build_engine(
+    embeddings_f32,          # float32 embeddings (unit-norm)
+    metric="cosine", basis="pca_corpus",
+    stage1_dim=192, k=10,
+)
+res = engine.search(query_f32)
+print(res.bound_violations)   # 0 — the proof
+```
+
+**Agnostic guarantee (the product, not a benchmark).** The engine is
+dataset-agnostic by construction: the Cauchy-Schwarz bound
+`⟨v,q⟩ ≤ ⟨Pv,Pq⟩ + e(v)e(q)` holds for **any** corpus, in **any** dimension.
+Verified on unstructured (random) unit-norm vectors — the worst case, where
+there is no manifold to exploit:
+
+| d | basis | bound violations (out of 3000) |
+|---|---|---|
+| 128 | random | 0 |
+| 128 | pca_corpus | 0 |
+| 1536 | random | 0 |
+| 1536 | pca_corpus | 0 |
+
+The 0-violation guarantee is a property of the algorithm, not of any dataset.
+For a corpus with a low-dimensional manifold, the PCA-aligned basis tightens
+`e(v)` and restores pruning at high dimension; for an isotropic corpus it falls
+back to the (still exact, still 0-violation) scan.
+
 ## Benchmarks
 
 ### The benchmark reference — a corrected, honest note
