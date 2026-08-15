@@ -205,17 +205,17 @@ def build_engine(
         raise ValueError("corpus must be a 2D array of shape (n, dim)")
     if dim is None:
         dim = arr.shape[1]
-    is_float32_corpus = arr.dtype == np.float32
-    # The C++ engine must see the corpus in the SAME dtype it was given.
-    #   - float32 corpus → build_float32 (the motor normalizes + computes the
-    #     residual e(v)=sqrt(1-‖Pv‖²) in the float32 manifold, for ANY basis).
-    #     Converting float32 to uint8 here destroys the manifold (e(v)→1.0
-    #     even for a correct random basis — the Bug B).
-    #   - uint8 corpus (BIGANN) → build_numpy (the default L2 path).
-    if not (hybrid or speed) and not is_float32_corpus:
+    # Corpus type detection (parametrizable, practical). The engine accepts any
+    # of the common dataset dtypes and routes to the right path:
+    #   - float32 / float64 (embeddings) → build_float32 (the C++ motor
+    #     normalizes and computes e(v)=sqrt(1-‖Pv‖²) in the float32 manifold,
+    #     for ANY basis). Converting float here to uint8 destroys the manifold
+    #     (e(v)→1.0 even for a correct random basis — Bug B).
+    #   - uint8 (BIGANN raw bytes) → build_numpy (the default L2 path).
+    is_float_corpus = arr.dtype in (np.float32, np.float64)
+    if not (hybrid or speed) and not is_float_corpus:
         arr = np.ascontiguousarray(arr, dtype=np.uint8)
-    # (for is_float32_corpus, arr stays float32 → build_float32 path below,
-    #  for ANY basis — random or pca_corpus)
+    # (for is_float_corpus, arr stays float → build_float32 path below)
     cfg = Config()
     cfg.dim = int(dim)
     is_cosine = metric.lower() == "cosine"
@@ -300,15 +300,34 @@ def build_engine(
 
     engine = MadhavaL2(cfg)
 
-    # Float32 embeddings: use the float32 build path for ANY basis (random or
-    # pca_corpus). The C++ engine normalizes (normalize_input) and computes the
-    # residual e(v) = sqrt(1 − ‖Pv‖²) over the REAL float32 corpus — the same
-    # space as the basis and the query. Using build_numpy (uint8) for a float32
-    # corpus puts v in a different space: e(v)→1.0 even for a correct random
-    # basis (the expected random e(v) ≈ sqrt(1−k/d) ≈ 0.935 at d=1536, k=192).
-    if is_float32_corpus:
-        engine.build_float32(np.ascontiguousarray(arr))
-        return _attach_buffer(engine, arr)
+    if is_float_corpus:
+        # The motor's float32 build path accepts float32; convert float64 to
+        # float32 (practical: the caller may pass float64 embeddings).
+        arr32 = np.ascontiguousarray(arr, dtype=np.float32)
+        engine.build_float32(arr32)
+
+        # UB Width mode (basis="pca_corpus"): supply the PCA basis computed by a
+        # NUMERICALLY ROBUST eigendecomposition — LAPACK (numpy eigh) — per the
+        # WINNEX UB Width paper (DOI 10.5281/zenodo.21939495, §7): "The base PCA
+        # is computed by LAPACK eigh and supplied via set_basis". A hand-rolled
+        # power iteration in float32 under-converges for the spectrum tail
+        # (captures ~13-36% of the variance vs ~94% for LAPACK) and is O(D²·s)
+        # per vector — the 110s build. LAPACK is exact, fast, and captures the
+        # full manifold variance, so e(v) tightens to the manifold residual at
+        # d = 1536 and the bound recovers pruning power.
+        if basis.lower() == "pca_corpus":
+            A = arr.astype(np.float64)
+            if cfg.normalize_input:
+                norms = np.linalg.norm(A, axis=1, keepdims=True)
+                A = A / np.maximum(norms, 1e-12)
+            sample = min(len(A), cfg.pca_sample)
+            C = A[:sample].T @ A[:sample] / sample
+            _, V = np.linalg.eigh(C)
+            V = V[:, ::-1]
+            P1 = V[:, :cfg.stage1_dim].T.astype(np.float32)
+            engine.set_basis(P1)
+
+        return _attach_buffer(engine, arr32)
 
     n = engine.build_numpy(arr)
     return _attach_buffer(engine, arr)
