@@ -680,43 +680,51 @@ float MadhavaL2::exact_score(int idx, const float* q) const {
         // M4: AVX2 L2² (16 uint8/iter) — o hot loop do post-filter / scan exato.
         return l2_sq_avx(base_ + (size_t)idx * cfg_.dim, q, cfg_.dim);
     } else {
-        // Cosine on raw uint8 vs a (possibly un-normalized) float query.
-        // AVX2: carrega 16 uint8 -> float, acumula dot + vn2.
+        // Cosine. BUG B FIX (2026-08-15): when a float32 corpus is available
+        // (corpus_f32_), the exact score MUST use it — the same space as the
+        // PCA basis and the query. Using the uint8 re-normalized base_ puts v
+        // in a different space (e(v)→1.0, wrong worst/top-K). For a uint8
+        // corpus (BIGANN), corpus_f32_ is null and we fall back to base_.
         float dot = 0, vn2 = 0, qn2 = 0;
+        if (corpus_f32_ != nullptr && cfg_.quant == QuantMode::None) {
+            const float* vf = corpus_f32_ + (size_t)idx * cfg_.dim;
+            for (int j = 0; j < cfg_.dim; j++) { dot += vf[j] * q[j]; vn2 += vf[j] * vf[j]; }
+        } else {
 #if defined(__AVX2__) && defined(__FMA__)
-        __m256 sd = _mm256_setzero_ps();
-        __m256 sv = _mm256_setzero_ps();
-        int j = 0;
-        for (; j + 16 <= cfg_.dim; j += 16) {
-            const uint8_t* v8 = base_ + (size_t)idx * cfg_.dim + j;
-            __m128i u8 = _mm_loadu_si128((const __m128i*)v8);
-            __m256i lo32 = _mm256_cvtepu8_epi32(u8);
-            __m256i hi32 = _mm256_cvtepu8_epi32(_mm_srli_si128(u8, 8));
-            __m256 flo = _mm256_cvtepi32_ps(lo32);
-            __m256 fhi = _mm256_cvtepi32_ps(hi32);
-            __m256 qlo = _mm256_loadu_ps(q + j);
-            __m256 qhi = _mm256_loadu_ps(q + j + 8);
-            sd = _mm256_fmadd_ps(flo, qlo, sd);
-            sd = _mm256_fmadd_ps(fhi, qhi, sd);
-            sv = _mm256_fmadd_ps(flo, flo, sv);
-            sv = _mm256_fmadd_ps(fhi, fhi, sv);
-        }
-        float od[8], ov[8];
-        _mm256_storeu_ps(od, sd);
-        _mm256_storeu_ps(ov, sv);
-        for (int k = 0; k < 8; k++) { dot += od[k]; vn2 += ov[k]; }
-        for (; j < cfg_.dim; j++) {
-            float v = (float)base_[(size_t)idx * cfg_.dim + j];
-            dot += v * q[j];
-            vn2 += v * v;
-        }
+            __m256 sd = _mm256_setzero_ps();
+            __m256 sv = _mm256_setzero_ps();
+            int j = 0;
+            for (; j + 16 <= cfg_.dim; j += 16) {
+                const uint8_t* v8 = base_ + (size_t)idx * cfg_.dim + j;
+                __m128i u8 = _mm_loadu_si128((const __m128i*)v8);
+                __m256i lo32 = _mm256_cvtepu8_epi32(u8);
+                __m256i hi32 = _mm256_cvtepu8_epi32(_mm_srli_si128(u8, 8));
+                __m256 flo = _mm256_cvtepi32_ps(lo32);
+                __m256 fhi = _mm256_cvtepi32_ps(hi32);
+                __m256 qlo = _mm256_loadu_ps(q + j);
+                __m256 qhi = _mm256_loadu_ps(q + j + 8);
+                sd = _mm256_fmadd_ps(flo, qlo, sd);
+                sd = _mm256_fmadd_ps(fhi, qhi, sd);
+                sv = _mm256_fmadd_ps(flo, flo, sv);
+                sv = _mm256_fmadd_ps(fhi, fhi, sv);
+            }
+            float od[8], ov[8];
+            _mm256_storeu_ps(od, sd);
+            _mm256_storeu_ps(ov, sv);
+            for (int k = 0; k < 8; k++) { dot += od[k]; vn2 += ov[k]; }
+            for (; j < cfg_.dim; j++) {
+                float v = (float)base_[(size_t)idx * cfg_.dim + j];
+                dot += v * q[j];
+                vn2 += v * v;
+            }
 #else
-        for (int j = 0; j < cfg_.dim; j++) {
-            float v = (float)base_[(size_t)idx * cfg_.dim + j];
-            dot += v * q[j];
-            vn2 += v * v;
-        }
+            for (int j = 0; j < cfg_.dim; j++) {
+                float v = (float)base_[(size_t)idx * cfg_.dim + j];
+                dot += v * q[j];
+                vn2 += v * v;
+            }
 #endif
+        }
         for (int j = 0; j < cfg_.dim; j++) qn2 += q[j] * q[j];
         float denom = std::sqrt(vn2 * qn2);
         return denom > 1e-10f ? dot / denom : 0.0f;
@@ -906,20 +914,63 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
 #pragma omp parallel for
             for (int i = 0; i < k2; i++) {
                 int vi = ranked[i].second;
-                exact[i] = {exact_score(vi, query), vi};
+                float score = exact_score(vi, query);
+                exact[i] = {score, vi};
             }
             n_exact = k2;
+            // Build a SEPARATE heap for the honest pruned_by_bound count — the
+            // K best exact scores among the evaluated survivors. This does NOT
+            // affect the returned indices (which come from the exact sort
+            // below); it only provides the K-th best exact score (worst) so the
+            // proof-based pruning can be measured.
+            for (int i = 0; i < n_exact; i++) push_candidate(exact[i].second, exact[i].first);
         }
         out.k3 = n_exact;
+
+        // HONEST PRUNING BREAKDOWN (2026-08-15).
+        //   exact_evals     = how many were scored exactly (n_exact).
+        //   pruned_by_bound = the number of the N vectors whose Cauchy-Schwarz
+        //                     bound is PROVEN below the K-th best exact score:
+        //                     UB(v,q) < worst. This is the proof-based pruning
+        //                     (0 violations by construction). With a wide bound
+        //                     (e(v)≈1) it is ~0 — the truth, not the "95%" of
+        //                     the fixed k1_fraction cutoff.
+        //   pruned_by_prefilter = N − exact_evals − pruned_by_bound (the fixed
+        //                     k1_fraction/k2_max cutoffs that are NOT proven by
+        //                     a per-vector certificate).
+        //
+        // We recompute UB(v,q) for ALL N in Stage-1 order (the query
+        // projections pq1/qr1 are already available) and count how many fall
+        // below the worst (K-th best exact) score. This measures the REAL
+        // bound-driven pruning against the whole corpus, independent of the
+        // fixed cutoff.
+        out.exact_evals = n_exact;
+        long long n_bound_pruned = 0;
         if ((int)heap.size() == K) {
-            // Final order: L2 wants ascending L2², cosine wants descending similarity.
-            // worse_than is the heap comparator (worst at top); the sorted output
-            // must be the OPPOSITE (best first).
+            float worst = heap[0].first;   // K-th best exact score
+            for (int i = 0; i < N; i++) {
+                float ub = ub_raw(i, 1, pq1, qr1, qm1);
+                if (is_l2) {
+                    // L2: exact L2² ≥ lb. If lb > worst, v is proven outside top-K.
+                    float lb = vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub;
+                    if (lb > worst) n_bound_pruned++;
+                } else {
+                    // cosine: exact cos ≤ UB. If UB < worst, v is proven outside.
+                    if (ub < worst) n_bound_pruned++;
+                }
+            }
+        }
+        out.pruned_by_bound = n_bound_pruned;
+        out.pruned_by_prefilter = (long long)N - n_exact - n_bound_pruned;
+
+        if (cfg_.early_exit && (int)heap.size() == K) {
+            // early_exit: the heap holds the top-K by exact score in the
+            // walk order — this IS the correct result.
             std::sort(heap.begin(), heap.end(),
                       [&](auto& a, auto& b) { return !worse_than(a.first, b.first); });
             for (int i = 0; i < K; i++) out.indices.push_back(heap[i].second);
         } else {
-            // Fallback (early_exit off or partial): sort exact.
+            // Fallback (early_exit off or partial): sort the exact scores.
             if (is_l2)
                 std::partial_sort(exact.begin(), exact.begin() + std::min(K, n_exact), exact.end());
             else

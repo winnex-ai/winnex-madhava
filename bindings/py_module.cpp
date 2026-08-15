@@ -71,7 +71,10 @@ PYBIND11_MODULE(_winnex_madhava, m) {
         .def_readonly("latency_ms", &SearchResult::latency_ms)
         .def_readonly("bound_pairs", &SearchResult::bound_pairs)
         .def_readonly("bound_violations", &SearchResult::bound_violations)
-        .def_readonly("modulation_gain", &SearchResult::modulation_gain);
+        .def_readonly("modulation_gain", &SearchResult::modulation_gain)
+        .def_readonly("pruned_by_bound", &SearchResult::pruned_by_bound)
+        .def_readonly("pruned_by_prefilter", &SearchResult::pruned_by_prefilter)
+        .def_readonly("exact_evals", &SearchResult::exact_evals);
 
     py::class_<MadhavaL2>(m, "MadhavaL2")
         .def(py::init<const Config&>())

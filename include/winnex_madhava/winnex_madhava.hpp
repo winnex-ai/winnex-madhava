@@ -117,6 +117,20 @@ struct SearchResult {
     long long bound_pairs = 0;  // N vectors evaluated in Stage-1
     long long bound_violations = 0; // should always be 0
     double modulation_gain = 0.0;   // mean |rank_by_modulated − rank_by_bound|
+
+    // HONEST PRUNING BREAKDOWN (2026-08-15). The "pruning" reported by k1/k2/k3
+    // is dominated by the fixed k1_fraction/k2_max cutoffs, NOT by the
+    // Cauchy-Schwarz bound. To expose the REAL bound-driven pruning, we count:
+    //   pruned_by_bound   — vectors discarded by a Cauchy-Schwarz certificate
+    //                       (UB(v,q) < the K-th best exact score). This is the
+    //                       proof-based pruning (0 violations by construction).
+    //   pruned_by_prefilter— vectors discarded by the fixed k1_fraction cutoff
+    //                       (the heuristic Stage-1 keep), WITHOUT a per-vector
+    //                       certificate. The "95%" of old kernels was this.
+    //   exact_evals       — vectors actually scored with the exact metric.
+    long long pruned_by_bound = 0;
+    long long pruned_by_prefilter = 0;
+    long long exact_evals = 0;
 };
 
 // ---------------------------------------------------------------------------
