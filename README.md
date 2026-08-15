@@ -502,6 +502,31 @@ For a corpus with a low-dimensional manifold, the PCA-aligned basis tightens
 `e(v)` and restores pruning at high dimension; for an isotropic corpus it falls
 back to the (still exact, still 0-violation) scan.
 
+**Honest pruning breakdown (what the motor really prunes).** `SearchResult`
+reports `pruned_by_bound` (vectors the Cauchy-Schwarz bound PROVED outside
+top-K) separately from `pruned_by_prefilter` (vectors cut by the fixed
+`k1_fraction` Stage-1 keep, without a per-vector certificate). This exposes
+the truth: a wide bound prunes nothing by proof; the fixed cutoff is the
+Stage-1 mechanism that guarantees recall via the exact post-filter.
+
+**Public benchmark — 3 real Kaggle datasets, package installed from PyPI:**
+[![Kaggle](https://img.shields.io/badge/Kaggle-1.8.6%20honest%20breakdown-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-8-6-honest-breakdown)
+
+| Dataset | dim | mode | recall@10 | bound viol. | **pruned_by_bound** | prefilter | e(v) |
+|---|---|---|---|---|---|---|---|
+| GloVe | 100 | random | 1.000 | 0 | 79.3% | 15.7% | — |
+| BIGANN-100M | 128 | random | 1.000 | 0 | 100.0% | ~0 | 0.0005 |
+| **arXiv OpenAI** | **1536** | **random** | 0.995 | 0 | **0.0%** | **95.0%** | 0.967 |
+| **arXiv OpenAI** | **1536** | **pca_corpus** | **1.000** | **0** | **80.5%** | 14.5% | **0.793** |
+
+**Reading (honest).** At d = 1536 the random basis has e(v) ≈ 0.97 — the bound
+is ~1.9 wide and cannot prove any vector is outside top-K (`pruned_by_bound =
+0.0%`); the "95%" is the fixed `k1_fraction` cutoff, not the bound. The
+PCA-aligned basis tightens e(v) to 0.79 and the bound **proves** 80.5% of the
+corpus is outside the top-10, at full recall (1.000). The kernel installs
+`winnex-madhava` from PyPI, reads the raw public datasets, and measures only
+what the motor returns (no numpy ground-truth, no re-ordering).
+
 ## Benchmarks
 
 ### The benchmark reference — a corrected, honest note

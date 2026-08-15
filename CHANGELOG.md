@@ -5,9 +5,24 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.7] — 2026-08-15
+
+### Docs: honest pruning breakdown + public Kaggle benchmark in the README
+
+Added the `SearchResult.pruned_by_bound` / `pruned_by_prefilter` breakdown to
+the README, with the public Kaggle benchmark on 3 real datasets (GloVe d=100,
+BIGANN-100M d=128, arXiv OpenAI d=1536), package installed from PyPI:
+
+- arXiv d=1536, random: pruned_by_bound = 0.0% (the wide bound proves nothing;
+  the "95%" is the fixed k1_fraction cutoff — the truth is now exposed).
+- arXiv d=1536, pca_corpus: pruned_by_bound = 80.5% (the tight bound proves
+  80.5% outside top-10), recall 1.000, 0 violations.
+
+Kernel: kleniopadilha/winnex-madhava-1-8-6-honest-breakdown.
+
 ## [1.8.6] — 2026-08-15
 
-### ✨ Parametrizable `build_engine` — accepts any dataset dtype; LAPACK PCA basis
+### Parametrizable `build_engine` — accepts any dataset dtype; LAPACK PCA basis
 
 1. **Practical dtype routing.** `build_engine` now accepts float32 AND float64
    embeddings (both go through the float32 manifold via `build_float32`);
@@ -35,7 +50,7 @@ The random basis proves nothing (wide bound); the PCA-aligned basis proves
 
 ## [1.8.5] — 2026-08-14
 
-### 🔴 Fix (P0): the UB Width engine was producing a degenerate basis — e(v)=1.0
+### Fix (P0): the UB Width engine was producing a degenerate basis — e(v)=1.0
 
 Three independent bugs made `basis="pca_corpus"` inert at high dimension
 (d = 1536): the residual `e(v) = √(1 − ‖Pv‖²)` stayed 1.0 (the bound never
@@ -63,7 +78,7 @@ Also fixed: `build_engine` no longer converts float32 embeddings to uint8 when
 `build_engine(corpus_f32, basis="pca_corpus")` now yields e(v)=0.2465,
 recall@10=1.000, 0 violations, 95% pruning at d=1536.
 
-### 📄 Docs: UB Width mode + public Kaggle benchmark in the README
+### Docs: UB Width mode + public Kaggle benchmark in the README
 
 Added the `basis="pca_corpus"` (UB Width) section to the README with the
 public Kaggle benchmark on the real BIGANN-100M dataset
@@ -74,7 +89,7 @@ dimension, d = 1536 — see the WINNEX UB Width paper, DOI 10.5281/zenodo.219394
 
 ## [1.8.4] — 2026-08-14
 
-### 🔴 Fix (P0): `build_engine(basis="pca_corpus")` raised `NameError: BasisMode`
+### Fix (P0): `build_engine(basis="pca_corpus")` raised `NameError: BasisMode`
 
 `build_engine` referenced `BasisMode` but the Python module did not import
 it. `build_engine(corpus, basis="pca_corpus")` — the UB Width mode — crashed
@@ -83,7 +98,7 @@ extension and added to `__all__`.
 
 ## [1.8.3] — 2026-08-14
 
-### 🔴 Fix (P0): `build_float32` truncated unit-norm embeddings to zero
+### Fix (P0): `build_float32` truncated unit-norm embeddings to zero
 
 `build_float32` converted float32 embeddings to uint8 with
 `uint8 = clamp(v, 0, 255)`. For a unit-norm embedding (values in [-1, 1]) this
@@ -91,7 +106,7 @@ maps nearly all values to 0 — the engine then sees all-zero vectors and recall
 collapses to 0. **Fixed**: the affine map `uint8 = (v + 1) * 127.5` preserves
 the geometry.
 
-### 🔴 Fix (P0): `set_basis` desynchronized the basis and the cached projections
+### Fix (P0): `set_basis` desynchronized the basis and the cached projections
 
 `set_basis` replaced the projection basis (`P1_`) but did not recompute the
 per-vector projections (`pr1_f_`) that `ub_raw` uses. The bound then combined
@@ -101,7 +116,7 @@ projections and residuals consistently over the real float32 corpus.
 
 ## [1.8.2] — 2026-08-11
 
-### 🔴 Fix (P0): early_exit default for cosine — recall 1.0 → 0.10 in high dimension
+### Fix (P0): early_exit default for cosine — recall 1.0 → 0.10 in high dimension
 
 The Python binding forced `early_exit=True` for cosine (auto). In high
 dimensions (dim >= 384) the modulated bound does not order like the exact
@@ -117,7 +132,7 @@ know the corpus/dimension is safe.
 
 ## [1.8.1] — 2026-08-08
 
-### 🛠 Fix: streaming build allocates only the current batch (robust C++ transaction)
+### Fix: streaming build allocates only the current batch (robust C++ transaction)
 
 The build streaming pass allocated a **fixed CHUNK × dim** buffer
 (500K × dim × 4 bytes — e.g. 2 GB for dim=1024) regardless of corpus size.
@@ -132,7 +147,7 @@ backend has a 2 GB limit). Now it allocates only `nt × dim` per batch.
 
 ## [1.8.0] — 2026-08-08
 
-### ⚡ Motor para o Maestro — M4 (AVX2), M1 (batch), M2 (persistência)
+### Motor para o Maestro — M4 (AVX2), M1 (batch), M2 (persistência)
 
 Capacidades adicionadas para servir o Maestro (ERP semântico):
 
@@ -160,7 +175,7 @@ on e funciona). Correção em versão futura.
 
 ## [1.7.2] — 2026-08-08
 
-### ⚡ Speed GPU: fused QKᵀ+topk — single-query 20× mais rápido
+### Speed GPU: fused QKᵀ+topk — single-query 20× mais rápido
 
 Corrige o gargalo mais significativo do speed mode GPU: o single-query era mais
 lento que o CPU (47.8ms vs 9.2ms no 1M). O kernel `qkt` original usava **1
@@ -219,7 +234,7 @@ HNSW/IVF/IVF-PQ no mesmo subset.
 
 ## [1.7.1] — 2026-08-07
 
-### ⚡ Speed GPU: topk paralelo (divide-and-conquer) + QKᵀ com tiling
+### Speed GPU: topk paralelo (divide-and-conquer) + QKᵀ com tiling
 
 - **Topk paralelo**: substitui o insertion sort serial (1 work-group/query) por
   `topk_local` (M work-groups por query, cada um varre um chunk de N) + `topk_merge`
@@ -290,7 +305,7 @@ HNSW/IVF/IVF-PQ no mesmo subset.
 
 ## [1.3.0] — 2026-08-06
 
-### ✨ Hybrid mode (MadHybrid)
+### Hybrid mode (MadHybrid)
 
 `build_engine(..., hybrid=True, nlist=..., nprobe=...)` returns a clustered
 MadHybrid wrapper: the same bound engine, partitioned into cells and queried
@@ -305,7 +320,7 @@ and **uint8 raw bytes** (L2, native C++ per cell). One motor, two modes.
 
 ## [1.1.3] — 2026-08-05
 
-### 🔧 Métricas robustas (Recall@K / NDCG@K)
+### Métricas robustas (Recall@K / NDCG@K)
 
 As métricas dividiam por `k=10` fixo e intersectavam apenas `gt[:k]`, o que
 penalizava queries com poucos relevantes no subset (um scan exato perfeito podia
@@ -341,7 +356,7 @@ Novo notebook público: [winnex-madhava-pip-113](https://www.kaggle.com/code/kle
 
 ## [1.1.2] — 2026-08-05
 
-### 🔧 Corrige a definição de recall@K (padrão BIGANN)
+### Corrige a definição de recall@K (padrão BIGANN)
 
 O recall era calculado contra **todos** os ids do GT presentes no subset (até
 100), inflando R@10 de 0.404 para 0.43 (10M) e de 0.354 para 0.788 (100M). O
@@ -388,7 +403,7 @@ HMC v7), tornando-se **parametrizável** com valores padrão:
 - **Normalização**: `normalize_input=True` para cosine.
 - **Parâmetros novos**: `k2_fraction`, `k2_min`, `modulation`, `normalize_input`.
 
-### 🔧 Correções
+### Correções
 
 - **Leitor de ground-truth corrigido** (C++ `read_bigann_groundtruth` já estava
   correto; os scripts de benchmark Python agora pulam os `dists` float32
