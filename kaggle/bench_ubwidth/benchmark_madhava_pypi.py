@@ -5,7 +5,7 @@ tests the madhava C++ motor on public Kaggle datasets. Emits one transparent
 JSON per dataset.
 
 HONEST PROTOCOL:
-  - `pip install winnex-madhava==1.8.6` from PyPI (nothing else).
+  - `pip install winnex-madhava==1.8.8` from PyPI (nothing else).
   - Reads public Kaggle datasets (raw, no numpy pre-processing):
       1. GloVe  (rtatman/glove)               d=100
       2. BIGANN (shurangwu/bigann-100m)       d=128 (uint8)
@@ -26,7 +26,7 @@ print("=" * 70, flush=True)
 # ---- 1. Install from PyPI ----
 print("\n[1] Installing winnex-madhava from PyPI...", flush=True)
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
-                       "--no-cache-dir", "winnex-madhava==1.8.6"])
+                       "--no-cache-dir", "winnex-madhava==1.8.8"])
 import winnex_madhava as wm
 print(f"    winnex-madhava {wm.__version__} installed from PyPI", flush=True)
 
