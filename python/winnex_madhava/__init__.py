@@ -206,18 +206,16 @@ def build_engine(
     if dim is None:
         dim = arr.shape[1]
     is_float32_corpus = arr.dtype == np.float32
-    want_pca = basis.lower() == "pca_corpus"
-    # hybrid and speed modes accept float32 embeddings (cosine); only the
-    # native C++ default mode requires uint8 raw bytes. For UB Width
-    # (basis="pca_corpus") with float32 embeddings, PRESERVE the float32 —
-    # the C++ engine needs it to compute the PCA basis and residual in the
-    # float32 manifold (converting to uint8 here destroys it, e(v)→1.0).
+    # The C++ engine must see the corpus in the SAME dtype it was given.
+    #   - float32 corpus → build_float32 (the motor normalizes + computes the
+    #     residual e(v)=sqrt(1-‖Pv‖²) in the float32 manifold, for ANY basis).
+    #     Converting float32 to uint8 here destroys the manifold (e(v)→1.0
+    #     even for a correct random basis — the Bug B).
+    #   - uint8 corpus (BIGANN) → build_numpy (the default L2 path).
     if not (hybrid or speed) and not is_float32_corpus:
         arr = np.ascontiguousarray(arr, dtype=np.uint8)
-    elif not (hybrid or speed) and not want_pca:
-        # default mode with float32: the C++ engine is uint8 (BIGANN-style).
-        arr = np.ascontiguousarray(arr, dtype=np.uint8)
-    # (for want_pca with float32, arr stays float32 → build_float32 path below)
+    # (for is_float32_corpus, arr stays float32 → build_float32 path below,
+    #  for ANY basis — random or pca_corpus)
     cfg = Config()
     cfg.dim = int(dim)
     is_cosine = metric.lower() == "cosine"
@@ -302,12 +300,13 @@ def build_engine(
 
     engine = MadhavaL2(cfg)
 
-    # UB Width mode (basis="pca_corpus") with float32 embeddings: use the
-    # float32 build path so the C++ engine computes the PCA basis from the
-    # REAL float32 corpus (build_pca_basis uses corpus_f32_) and the residuals
-    # reflect the true projection. The engine computes everything in C++; the
-    # Python layer only forwards the corpus (no numpy PCA, no set_basis).
-    if basis.lower() == "pca_corpus" and is_float32_corpus:
+    # Float32 embeddings: use the float32 build path for ANY basis (random or
+    # pca_corpus). The C++ engine normalizes (normalize_input) and computes the
+    # residual e(v) = sqrt(1 − ‖Pv‖²) over the REAL float32 corpus — the same
+    # space as the basis and the query. Using build_numpy (uint8) for a float32
+    # corpus puts v in a different space: e(v)→1.0 even for a correct random
+    # basis (the expected random e(v) ≈ sqrt(1−k/d) ≈ 0.935 at d=1536, k=192).
+    if is_float32_corpus:
         engine.build_float32(np.ascontiguousarray(arr))
         return _attach_buffer(engine, arr)
 
