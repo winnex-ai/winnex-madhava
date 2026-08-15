@@ -192,9 +192,7 @@ bool build_pca_basis(const float* base_f32, int n, int D, int s, int seed,
     int sample = std::min(n, sample_cap);
     if (sample < 1) return false;
 
-    // 1. Load a subsample of the corpus, optionally L2-normalized so that the
-    //    covariance reflects the metric geometry.
-    std::vector<float> mu(D, 0.0f);
+    // 1. Load a subsample of the corpus, optionally L2-normalized.
     std::mt19937 rng(seed);
     std::vector<float> A((size_t)sample * D);
     for (int i = 0; i < sample; i++) {
@@ -207,52 +205,31 @@ bool build_pca_basis(const float* base_f32, int n, int D, int s, int seed,
             float inv = 1.0f / std::sqrt(nn);
             for (int j = 0; j < D; j++) dst[j] *= inv;
         }
-        for (int j = 0; j < D; j++) mu[j] += dst[j];
     }
-    for (int j = 0; j < D; j++) mu[j] /= (float)sample;
 
-    // 2. Empirical covariance C = (1/sample) * Σ a·aᵀ  (D×D), NON-CENTERED.
-    //
-    //    MATHEMATICAL REQUIREMENT (2026-08-14, proved): the Cauchy-Schwarz
-    //    bound e(v) = sqrt(1 − ||Pv||²) requires v (unit-norm) and P in the SAME
-    //    space. Centering the covariance (subtracting the mean) removes the
-    //    dominant direction of the corpus — for arXiv ‖μ‖=0.87, so the centered
-    //    spectrum collapses to λ₁=0.009 (e(v)=0.86, wide bound). The
-    //    NON-centered covariance C = XᵀX/N keeps the total energy (λ₁=0.76),
-    //    giving e(v)=0.24 (tight bound) with the SAME 0-violation guarantee and
-    //    the SAME pruning (~90%). Non-centered is the correct basis for the bound.
+    // 2. Empirical covariance, NON-CENTERED: C = (1/sample)·Σ a·aᵀ.
+    //    The bound e(v) = sqrt(1 − ‖Pv‖²) needs v and P in the same space;
+    //    centering removes the corpus' dominant direction and widens the bound.
     std::vector<float> C((size_t)D * D, 0.0f);
     for (int i = 0; i < sample; i++) {
         const float* a = A.data() + (size_t)i * D;
         for (int r = 0; r < D; r++) {
             float ar = a[r];
             float* Cr = C.data() + (size_t)r * D;
-            for (int c = 0; c < D; c++) Cr[c] += ar * (a[c]);
+            for (int c = 0; c < D; c++) Cr[c] += ar * a[c];
         }
     }
     float invs = 1.0f / (float)sample;
-    // Scale the WHOLE covariance by 1/sample — not just the diagonal. Scaling
-    // only the diagonal breaks the matrix (out-of-diagonal entries stay a
-    // factor sample larger), and the power iteration then converges to
-    // eigenvalues > tr(C) — impossible for a PSD matrix (measured λ=278 vs
-    // tr=0.53 at D=1536). This was the root cause of the UB-Width basis being
-    // orthogonal to the data.
     for (size_t x = 0; x < (size_t)D * D; x++) C[x] *= invs;
     double trace = 0.0;
     for (int j = 0; j < D; j++) trace += (double)C[(size_t)j * D + j];
     if (trace < 1e-12) return false;
 
     // 3. Top-s eigenvectors by POWER ITERATION with deflation + MGS
-    //    re-orthogonalization (O(D²·s·iters)) — the X-Factor's proven method.
-    //
-    //    WHY NOT JACOBI (2026-08-14, measured): a cyclic-sweep Jacobi needs the
-    //    off-diagonal norm to fall below ~(float-epsilon·trace)² to isolate the
-    //    top directions. In float32 at d=1536 that tolerance is unreachable, so
-    //    the sweep exhausts its budget and returns a basis in the null subspace
-    //    (engine basis captured only 0.0003 of the variance vs 0.94 for LAPACK).
-    //    Power iteration with deflation + MGS is deterministic and robust at
-    //    that scale — verified on a realistic spectrum it recovers λ₁=0.767
-    //    exactly.
+    //    re-orthogonalization (O(D²·s·iters)) — the X-Factor's method.
+    //    A cyclic-sweep Jacobi under-converges at d=1536 in float32 (the
+    //    off-diagonal tolerance is unreachable), so we use the robust
+    //    bound-guided power iteration here.
     std::vector<float> W(C);   // working copy, deflated in place
     std::vector<float> basis((size_t)s * D, 0.0f);  // row-major [s][D]
     std::mt19937 rng_pow(seed + 0x5EED);
@@ -607,13 +584,9 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
         pr2_scale_[j] = std::max(ma2[j] / 127.0f * 1.05f, 1e-10f);
 
     // 4. Streaming pass: compute projections + residuals.
-    //
-    // CRITICAL (2026-08-14): the residual must be computed over the REAL
-    // float32 corpus (corpus_f32_) when it is available — NOT over the uint8
-    // re-normalized base_. Using base_ for a float32-embedded corpus collapses
-    // the projection energy to ~0 (pn1 ≈ 0), so e(v) = sqrt(1-0) = 1.0 even for
-    // a correct PCA basis. This made the bound INERT (e(v)=1.0 for BOTH the
-    // random and PCA bases at d=1536) and the recall a fallback artifact.
+    //    When a float32 corpus is available, the residual must use it (the same
+    //    space as the basis); the uint8 re-normalized base_ is a different space
+    //    and would collapse the projection energy to ~0 (e(v)→1.0).
     const int CHUNK = 500000;
     const bool use_f32 = (corpus_f32_ != nullptr) && (cfg_.quant == QuantMode::None);
     int p = 0;
@@ -621,7 +594,7 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
         int nt = std::min(CHUNK, n - p);
         std::vector<float> ch((size_t)nt * D);
         if (use_f32) {
-            // copy the real float32 rows (no uint8 conversion, no re-normalization)
+            // copy the real float32 rows (same space as the PCA basis)
             std::memcpy(ch.data(), corpus_f32_ + (size_t)p * D,
                         (size_t)nt * D * sizeof(float));
             for (int i = 0; i < nt; i++) {
