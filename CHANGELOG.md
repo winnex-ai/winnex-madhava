@@ -5,6 +5,26 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.8] — 2026-08-15
+
+### Fix: prefilter clamp, residuals1 zeros at k=d, BIGANN space mismatch, drop internal solver
+
+1. `pruned_by_prefilter` clamped to `max(0, N - exact_evals - pruned_by_bound)` —
+   it could go negative because the survivors and the bound-proved set overlap.
+2. `residuals1()`/`residuals2()` return an array of zeros when `e1_`/`e2_` is not
+   populated (e.g. k >= d, projection complete) instead of an uninitialized array.
+3. BIGANN space mismatch: with `normalize_input=true` and a float32 path, the
+   streaming now normalizes v in-place before projecting, so
+   `e(v) = sqrt(1 - ||Pv||^2)` is computed in the unit-norm space the PCA basis
+   expects. Previously v held raw uint8-cast values, `pn1 >> 1` and e(v)
+   collapsed to 0 (measured 0.0 -> 0.3307, the correct value).
+4. `build_engine(basis="pca_corpus")` no longer runs the internal
+   power-iteration PCA solver when the LAPACK base will be supplied via
+   `set_basis` (the UB Width paper path). The internal solver was the ~100 s
+   ingestion bottleneck and under-converged for the spectrum tail (13-36% of
+   variance vs 94% for LAPACK). Measured: d=1536 pca_corpus build 103.9 s ->
+   1.9 s, e(v) = 0.2414.
+
 ## [1.8.7] — 2026-08-15
 
 ### Docs: honest pruning breakdown + public Kaggle benchmark in the README
