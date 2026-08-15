@@ -5,6 +5,34 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.6] — 2026-08-15
+
+### ✨ Parametrizable `build_engine` — accepts any dataset dtype; LAPACK PCA basis
+
+1. **Practical dtype routing.** `build_engine` now accepts float32 AND float64
+   embeddings (both go through the float32 manifold via `build_float32`);
+   only a genuine uint8 corpus (BIGANN) uses the `build_numpy` L2 path.
+   Previously a float64 corpus was mis-detected as non-float and truncated to
+   uint8, collapsing `e(v)` to 1.0.
+
+2. **LAPACK PCA basis (the UB Width path).** `basis="pca_corpus"` computes the
+   PCA basis with LAPACK (`numpy.eigh`) and supplies it via `set_basis` — per
+   the WINNEX UB Width paper (DOI 10.5281/zenodo.21939495, §7). The earlier
+   hand-rolled float32 power iteration under-converged for the spectrum tail
+   (captured 13–36% of the variance vs 94% for LAPACK) and cost ~110 s at
+   d=1536. LAPACK is exact, fast, and restores the bound's pruning power at
+   high dimension.
+
+**Measured at d=1536 (arXiv, 20K subset, 100 queries, top-10):**
+
+| mode | build | e(v) | recall | pruned_by_bound |
+|---|---|---|---|---|
+| random | 0.6 s | 0.9265 | 1.000 | 0.0% |
+| pca_corpus | 25.6 s | 0.2462 | 1.000 | 97.8% |
+
+The random basis proves nothing (wide bound); the PCA-aligned basis proves
+97.8% of the corpus is outside the top-10, at full recall.
+
 ## [1.8.5] — 2026-08-14
 
 ### 🔴 Fix (P0): the UB Width engine was producing a degenerate basis — e(v)=1.0
