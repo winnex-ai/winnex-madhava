@@ -259,6 +259,38 @@ recall; on uniform data, prefer `default` mode.
 | `speed` | `False` | `True` → native speed mode (C++ QKᵀ matmul + fused topk; OpenCL GPU default, CUDA opt-in, OpenMP/AVX2 on CPU) |
 | `speed_n_anchors` | `0` | K PiPrime anchors for **O(K) navigation**. `>=2` → sublinear (route query to the nprobe most-similar anchor cells); `0` → brute-force exact scan |
 | `speed_nprobe` | `4` | Anchor cells probed per query. Higher = better recall, more latency |
+| `speed_opencl_lib` | `""` | **Explicit OpenCL loader/driver `.so`** for the GPU backend. Empty = `WINNEX_OPENCL_LIB` env var, else the platform ICD loader. No hardcoded vendor fallback — you choose the loader. |
+
+**Choosing the OpenCL loader (transparent, no hardcoding).** The GPU backend
+loads the OpenCL library at runtime via `dlopen` — it never hardcodes a vendor
+`.so`. The loader is resolved per-engine in this order:
+
+1. `speed_opencl_lib="..."` — pin an exact loader/driver (e.g.
+   `"libOpenCL.so.1"` for the generic ICD loader, `"libnvidia-opencl.so.1"`
+   for the NVIDIA driver, `"libmali.so.1"` for ARM, or a full path).
+2. `$WINNEX_OPENCL_LIB` — same override, via environment.
+3. The standard platform ICD loader (`libOpenCL.so.1`).
+
+Every attempt is logged (`[Winnex Madhava] OpenCL loader resolved: ...` /
+`failed to load: ...`), and `gpu_reason()` reports the exact loader tried — a
+CPU fallback is always explainable. Use `require_gpu=True` to raise instead of
+falling back:
+
+```python
+# Pin the ICD loader explicitly (e.g. when it is not on the default dlopen path)
+eng = winnex_madhava.build_engine(
+    corpus, k=10, speed=True, metric="cosine",
+    speed_opencl_lib="/usr/lib/x86_64-linux-gnu/libOpenCL.so.1",
+    require_gpu=True,     # raise if this loader has no GPU device
+)
+print(eng.backend_name(), eng.gpu_reason())   # "gpu" or the reason
+```
+
+> **Why configurable?** A machine can have the NVIDIA driver + ICD vendor file
+> (`/etc/OpenCL/vendors/nvidia.icd`) but lack the generic loader
+> (`libOpenCL.so.1`) on the `dlopen` path. Without this option the GPU would be
+> silently invisible. With `speed_opencl_lib` you point at the installed
+> loader and the SpeedEngine enables the GPU (OpenCL QKᵀ + device topk).
 
 ```python
 import winnex_madhava, numpy as np
