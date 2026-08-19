@@ -79,9 +79,10 @@ inline float dot_f32(const float* a, const float* b, int d) {
 
 // --- Construction ---------------------------------------------------------
 SpeedEngine::SpeedEngine(const float* corpus, int n, int dim, Metric metric,
-                         int n_anchors, int nprobe, bool require_gpu)
+                         int n_anchors, int nprobe, bool require_gpu,
+                         const std::string& opencl_lib)
     : n_(n), dim_(dim), is_cosine_(metric == Metric::Cosine),
-      require_gpu_(require_gpu) {
+      require_gpu_(require_gpu), opencl_lib_(opencl_lib) {
     corpus_f32_.resize((size_t)n * dim);
     norms_.resize((size_t)n);
     if (is_cosine_) {
@@ -114,9 +115,10 @@ SpeedEngine::SpeedEngine(const float* corpus, int n, int dim, Metric metric,
 }
 
 SpeedEngine::SpeedEngine(const uint8_t* corpus, int n, int dim, Metric metric,
-                         int n_anchors, int nprobe, bool require_gpu)
+                         int n_anchors, int nprobe, bool require_gpu,
+                         const std::string& opencl_lib)
     : n_(n), dim_(dim), is_cosine_(metric == Metric::Cosine),
-      require_gpu_(require_gpu) {
+      require_gpu_(require_gpu), opencl_lib_(opencl_lib) {
     corpus_f32_.resize((size_t)n * dim);
     norms_.resize((size_t)n);
 #pragma omp parallel for

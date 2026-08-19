@@ -5,6 +5,55 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] — 2026-08-19
+
+### Added: `search_audited` + `audit_json` — the mathematical proof per document
+
+The motor now emits the **per-document Cauchy-Schwarz certificate** that the
+winnex-audit-cpp spec and the tracer-gov/tracer-med compliance flows consume
+(`GovAuditRecord`: `doc_id`, `true_cosine`, `upper_bound`, `threshold`,
+`excluded`, `stage`).
+
+- `search_audited(query, k, max_audit_records=500)` → the normal `SearchResult`
+  plus a per-doc certificate. The math is 100% the motor's own (`ub_raw`,
+  `residuals1`, `exact_score`) — nothing is reimplemented.
+- `audit_json(query, k, max_audit_records=500)` → the certificate as JSON
+  (the audit_json of winnex-audit-cpp).
+- The certificate examines the `max_audit_records` docs nearest the top-K
+  boundary + the top-K themselves (the tracer-gov default is 500).
+- **Metric-correct**: cosine excludes when `UB < threshold`; L2 excludes when
+  `L2²-lower-bound > threshold` (mirrors the motor's own `n_bound_pruned`).
+- **Consistency proven**: with `max_audit_records >= N`, `audit_excluded`
+  equals the motor's `pruned_by_bound` exactly.
+- `search()` is unchanged — this is purely additive. 0 bound violations by
+  construction, verified by 7 new Python tests (28 total, all passing).
+
+### Added: explicit OpenCL loader config (no hardcoded vendor .so)
+
+The speed-mode GPU backend now resolves the OpenCL loader **transparently and
+configurably** — no hardcoded driver name:
+
+- `build_engine(..., speed=True, speed_opencl_lib="<loader.so>")` (and
+  `MadhavaSpeed(..., opencl_lib=...)`) let the caller pin the exact loader /
+  driver `.so` (e.g. `"libOpenCL.so.1"`, `"libnvidia-opencl.so.1"`, or a full
+  path). Empty (default) = the `WINNEX_OPENCL_LIB` env var, else the platform
+  ICD loader.
+- Every loader attempt is logged (`[Winnex Madhava] OpenCL loader resolved: ...`
+  / `failed to load: ...`), and `gpu_reason()` reports the exact loader tried —
+  the CPU fallback is always explainable, never a silent hardcoded cascade.
+- Verified on this machine: the NVIDIA GPU (CUDA 12.9) was previously invisible
+  to the engine because the generic ICD loader (`libOpenCL.so.1`) was not in
+  the default `dlopen` path. With `speed_opencl_lib` pointing at the installed
+  loader, the SpeedEngine enables the **GPU backend** (`OpenCL QK^T + device
+  topk, JIT-compiled kernels`) and matches exact top-1.
+- **Fix (per-engine loader, not global):** the OpenCL loader state was a
+  process-global singleton — once any loader was loaded, a later `SpeedEngine`
+  ignored its own `opencl_lib` config (even an invalid one with
+  `require_gpu=True`). Now `load_opencl()` tracks which loader is loaded and
+  reloads when a different one is requested, so each engine's config is
+  authoritative. Verified: an invalid loader with `require_gpu=True` correctly
+  raises after a valid loader was used in the same process.
+
 ## [1.8.8] — 2026-08-15
 
 ### Fix: prefilter clamp, residuals1 zeros at k=d, BIGANN space mismatch, drop internal solver

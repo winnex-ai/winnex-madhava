@@ -49,10 +49,17 @@ public:
     //   the nprobe most-similar anchor cells, and QKᵀ runs only over the
     //   members of those cells. When n_anchors < 2, it falls back to the full
     //   exact scan (brute force).
+    // opencl_lib: explicit OpenCL loader/driver .so to use (e.g.
+    //   "libOpenCL.so.1", "libnvidia-opencl.so.1", "libmali.so.1", or a full
+    //   path). Empty string (default) = use the standard loader resolution
+    //   (env WINNEX_OPENCL_LIB, else the platform ICD loader). No hardcoded
+    //   vendor fallback is attempted; the caller picks the loader.
     SpeedEngine(const float* corpus, int n, int dim, Metric metric,
-                int n_anchors = 0, int nprobe = 4, bool require_gpu = false);
+                int n_anchors = 0, int nprobe = 4, bool require_gpu = false,
+                const std::string& opencl_lib = "");
     SpeedEngine(const uint8_t* corpus, int n, int dim, Metric metric,
-                int n_anchors = 0, int nprobe = 4, bool require_gpu = false);
+                int n_anchors = 0, int nprobe = 4, bool require_gpu = false,
+                const std::string& opencl_lib = "");
     ~SpeedEngine();
 
     SpeedEngine(const SpeedEngine&) = delete;
@@ -113,6 +120,7 @@ private:
     bool use_gpu_ = false;
     bool require_gpu_ = false;
     std::string gpu_reason_;   // why the GPU was not enabled (log/diagnostics)
+    std::string opencl_lib_;   // explicit OpenCL loader/driver .so ("" = standard)
 
     // O(K) anchor navigation: K PiPrime anchors + per-vector cell assignment.
     int n_anchors_ = 0;

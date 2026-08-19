@@ -399,12 +399,45 @@ See [Parameter guide](#parameter-guide).
 ### `engine.search(query: np.ndarray) -> SearchResult`
 
 Returns `indices`, `latency_ms`, `k1`, `k2`, `k3`, `bound_pairs`,
-`bound_violations`, `modulation_gain`.
+`bound_violations`, `modulation_gain`, and the honest pruning breakdown
+`pruned_by_bound` / `pruned_by_prefilter` / `exact_evals`.
 
 ### `engine.search_exact(query: np.ndarray) -> SearchResult`
 
 Exhaustive scan over all N vectors — the **recall ceiling** of your corpus.
 Use it to measure how close an approximate index gets to the physical limit.
+
+### `engine.search_audited(query, k=10, max_audit_records=500) -> dict`
+
+The same top-K **plus a per-document mathematical certificate** — the
+`winnex-audit-cpp` / `GovAuditRecord` format consumed by the tracer-gov and
+tracer-med compliance flows. Returns:
+
+```python
+{
+  "indices": [...], "latency_ms": ..., "bound_violations": 0,
+  "audit_candidates": int, "audit_excluded": int,
+  "audit": [  # per-document proofs
+    {
+      "doc_id": int, "true_cosine": float, "projected_cosine": float,
+      "residual_norm": float, "upper_bound": float, "threshold": float,
+      "excluded": bool, "stage": "stage1"|"stage2"|"survived"|"in_topk",
+    }, ...
+  ],
+}
+```
+
+Each `excluded=true` record is a document the **Cauchy-Schwarz bound proves**
+cannot be in the exact top-K (`UB < threshold` for cosine; `L2²-lower-bound >
+threshold` for L2). The math is the motor's own (`ub_raw`, `residuals1`,
+`exact_score`) — no reimplementation. The certificate examines the
+`max_audit_records` documents nearest the top-K boundary plus the top-K
+themselves, so per-query cost stays bounded (tracer-gov default = 500).
+
+### `engine.audit_json(query, k=10, max_audit_records=500) -> str`
+
+The audited result as a JSON string (the `audit_json` of winnex-audit-cpp) —
+ready to attach to a certificate / QR / WORM evidence record.
 
 ### `winnex_madhava.benchmark_vs_groundtruth(engine, queries, gt_ids, *, query_alignment=1, k=None) -> dict`
 

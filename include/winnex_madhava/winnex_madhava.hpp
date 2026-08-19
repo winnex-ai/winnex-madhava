@@ -134,6 +134,33 @@ struct SearchResult {
 };
 
 // ---------------------------------------------------------------------------
+// Per-document audit certificate (winnex-audit-cpp compatible)
+// ---------------------------------------------------------------------------
+// A single excluded/kept document, with the mathematical proof that it could
+// (or could not) be in the exact top-K. This is the record shape consumed by
+// the tracer-gov GovAuditRecord and the tracer-med certificate/QR flow.
+struct AuditRecord {
+    int64_t doc_id = -1;
+    double true_cosine = 0.0;     // exact <v,q> (normalized space)
+    double projected_cosine = 0.0; // <Pv,Pq> Stage-1
+    double residual_norm = 0.0;   // e(v) * e(q)  (the bound width)
+    double upper_bound = 0.0;     // projected_cosine + residual_norm + margin
+    double threshold = 0.0;       // exact score of the K-th result
+    bool excluded = false;        // true if upper_bound < threshold
+    std::string stage;            // "stage1" | "stage2" | "survived" | "in_topk"
+};
+
+// ---------------------------------------------------------------------------
+// Audited search result: the normal SearchResult + the per-doc certificate
+// ---------------------------------------------------------------------------
+struct AuditResult {
+    SearchResult base;                  // top-K + honest pruning breakdown
+    std::vector<AuditRecord> audit;     // per-document proofs (excluded docs)
+    long long audit_candidates = 0;     // docs examined for the certificate
+    long long audit_excluded = 0;       // docs proven outside top-K
+};
+
+// ---------------------------------------------------------------------------
 // Evaluation metrics (binary relevance against a ground-truth id list)
 // ---------------------------------------------------------------------------
 struct Metrics {
@@ -203,6 +230,24 @@ public:
     // Returns the exact top-K (the recall ceiling of the subset).
     SearchResult search_exact(const float* query, const std::vector<float>& query_norm) const;
     SearchResult search_exact(const float* query) const;
+
+    // Audited search: the normal search() PLUS a per-document Cauchy-Schwarz
+    // certificate (winnex-audit-cpp / GovAuditRecord compatible). Reuses the
+    // motor's own ub_raw / residuals / exact_score — no reimplementation.
+    //
+    // The certificate examines at most `max_audit_records` documents that are
+    // nearest the top-K boundary (the docs whose bound is close to the
+    // threshold) plus the top-K themselves — the records regulators care
+    // about. Capped so per-query cost stays bounded (the tracer-gov Config
+    // default is max_audit_records_per_query = 500).
+    //
+    // Returns a full AuditResult. `search()` is unchanged — this is additive.
+    AuditResult search_audited(const float* query, int64_t k = 10,
+                               int64_t max_audit_records = 500) const;
+
+    // Render the audited result as JSON (the audit_json of winnex-audit-cpp).
+    std::string audit_json(const float* query, int64_t k = 10,
+                           int64_t max_audit_records = 500) const;
 
     // Diagnostics
     int num_vectors() const { return n_; }

@@ -118,7 +118,44 @@ int main() {
     std::vector<int> empty;
     assert(recall_at_k(empty, gt, 10) == 0.0);
 
-    // 5. SpeedEngine GPU backend (OpenCL or CUDA) matches brute force.
+    // 5. Audited search: the per-document Cauchy-Schwarz certificate.
+    {
+        // Reuse the already-built engine (cosine via build over uint8, the
+        // benchmark path). The certificate semantics are metric-agnostic:
+        // excluded must be provably outside the exact top-K.
+        std::vector<float> q(dim, 0.f);  // zero query (deterministic, simple)
+        auto ar = engine.search_audited(q.data(), 10, 500);
+        assert(!ar.audit.empty());
+        assert(ar.base.bound_violations == 0);
+        printf("audit: candidates=%lld excluded=%lld\n",
+               ar.audit_candidates, ar.audit_excluded);
+
+        // 5a. The top-K of the audited search must be exactly the search() top-K.
+        auto base = engine.search(q.data());
+        assert(base.indices == ar.base.indices);
+
+        // 5b. Every audit record has the GovAuditRecord shape (non-empty stage).
+        for (const auto& rec : ar.audit) {
+            assert(!rec.stage.empty());
+            assert(rec.doc_id >= 0);
+        }
+
+        // 5c. Consistency with the motor's own honest bound pruning:
+        //     with the certificate covering the whole corpus, audit_excluded
+        //     must equal pruned_by_bound exactly (same math).
+        auto ar_full = engine.search_audited(q.data(), 10, n);
+        assert(ar_full.audit_excluded == base.pruned_by_bound);
+        printf("audit consistency: excluded(%lld) == pruned_by_bound(%lld)\n",
+               ar_full.audit_excluded, base.pruned_by_bound);
+
+        // 5d. audit_json returns a non-empty string containing the audit_trail.
+        std::string j = engine.audit_json(q.data(), 10, 500);
+        assert(!j.empty());
+        assert(j.find("audit_trail") != std::string::npos);
+        printf("audit_json: %zu bytes\n", j.size());
+    }
+
+    // 6. SpeedEngine GPU backend (OpenCL or CUDA) matches brute force.
     {
         int sn = 20000, sd = 48;
         auto corpus = make_f32(sn, sd, /*seed=*/123);

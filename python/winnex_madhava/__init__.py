@@ -82,7 +82,7 @@ recall_at_k = _native.recall_at_k
 ndcg_at_k = _native.ndcg_at_k
 read_bigann_groundtruth = _native.read_bigann_groundtruth
 
-__version__ = "1.8.8"
+__version__ = "1.9.0"
 __all__ = [
     "Config",
     "SearchResult",
@@ -136,6 +136,11 @@ def build_engine(
     # (sublinear); 0 = brute-force exact scan.
     speed_n_anchors: int = 0,
     speed_nprobe: int = 4,
+    # Explicit OpenCL loader/driver .so for the speed mode GPU backend
+    # (e.g. "libOpenCL.so.1", "libnvidia-opencl.so.1", or a full path).
+    # Empty (default) = standard loader resolution (env WINNEX_OPENCL_LIB,
+    # else the platform ICD loader). No hardcoded vendor fallback.
+    speed_opencl_lib: str = "",
 ) -> MadhavaL2:
     """Build a Winnex Madhava engine over a uint8 corpus.
 
@@ -296,6 +301,7 @@ def build_engine(
             n_anchors=int(speed_n_anchors),
             nprobe=int(speed_nprobe),
             require_gpu=require_gpu,
+            opencl_lib=speed_opencl_lib,
         )
 
     # For UB Width (basis="pca_corpus") we supply the PCA basis computed by a
@@ -714,10 +720,11 @@ class MadhavaSpeed:
     """
 
     def __init__(self, corpus, *, k=10, metric="cosine", dtype="float32",
-                 n_anchors=0, nprobe=4, require_gpu=False):
+                 n_anchors=0, nprobe=4, require_gpu=False, opencl_lib=""):
         self._k = int(k)
         self._metric = metric.lower()
         self._require_gpu = bool(require_gpu)
+        self._opencl_lib = str(opencl_lib or "")
         arr = np.ascontiguousarray(corpus)
         self._n = arr.shape[0]
         self._dim = arr.shape[1]
@@ -741,6 +748,7 @@ class MadhavaSpeed:
                         1 if self._metric == "l2" else 0,
                         int(n_anchors), int(nprobe),
                         bool(require_gpu),
+                        self._opencl_lib,
                     )
                 else:
                     f32 = arr.astype(np.float32)
@@ -749,6 +757,7 @@ class MadhavaSpeed:
                         1 if self._metric == "l2" else 0,
                         int(n_anchors), int(nprobe),
                         bool(require_gpu),
+                        self._opencl_lib,
                     )
             except Exception:
                 if self._require_gpu:

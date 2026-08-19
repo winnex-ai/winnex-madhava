@@ -144,6 +144,47 @@ PYBIND11_MODULE(_winnex_madhava, m) {
                  return self.search_exact((const float*)info.ptr);
              },
              py::arg("query"))
+        .def("search_audited",
+             [](const MadhavaL2& self,
+                py::array_t<float, py::array::c_style | py::array::forcecast> q,
+                int64_t k, int64_t max_audit_records) {
+                 auto info = q.request();
+                 if (info.ndim != 1 || (int)info.shape[0] != self.dim())
+                     throw std::runtime_error("query must be float32 of length dim");
+                 auto r = self.search_audited((const float*)info.ptr, k, max_audit_records);
+                 py::dict d;
+                 d["indices"] = r.base.indices;
+                 d["latency_ms"] = r.base.latency_ms;
+                 d["bound_violations"] = r.base.bound_violations;
+                 d["bound_pairs"] = r.base.bound_pairs;
+                 d["audit_candidates"] = r.audit_candidates;
+                 d["audit_excluded"] = r.audit_excluded;
+                 py::list audit;
+                 for (const auto& rec : r.audit) {
+                     py::dict rd;
+                     rd["doc_id"] = (int64_t)rec.doc_id;
+                     rd["true_cosine"] = rec.true_cosine;
+                     rd["projected_cosine"] = rec.projected_cosine;
+                     rd["residual_norm"] = rec.residual_norm;
+                     rd["upper_bound"] = rec.upper_bound;
+                     rd["threshold"] = rec.threshold;
+                     rd["excluded"] = rec.excluded;
+                     rd["stage"] = rec.stage;
+                     audit.append(rd);
+                 }
+                 d["audit"] = audit;
+                 return d;
+             },
+             py::arg("query"), py::arg("k") = 10, py::arg("max_audit_records") = 500)
+        .def("audit_json",
+             [](const MadhavaL2& self, py::array_t<float, py::array::c_style | py::array::forcecast> q,
+                 int64_t k, int64_t max_audit_records) {
+                 auto info = q.request();
+                 if (info.ndim != 1 || (int)info.shape[0] != self.dim())
+                     throw std::runtime_error("query must be float32 of length dim");
+                 return self.audit_json((const float*)info.ptr, k, max_audit_records);
+             },
+             py::arg("query"), py::arg("k") = 10, py::arg("max_audit_records") = 500)
         .def("search_batch",
              [](const MadhavaL2& self, py::array_t<float, py::array::c_style | py::array::forcecast> q, int nq, int k) {
                  auto info = q.request();
@@ -213,28 +254,32 @@ PYBIND11_MODULE(_winnex_madhava, m) {
     // SpeedEngine — native speed mode (QKᵀ matmul: CUDA if available, else CPU)
     py::class_<SpeedEngine>(m, "SpeedEngine")
         .def(py::init([](py::array_t<float, py::array::c_style> arr, int dim, int metric,
-                         int n_anchors, int nprobe, bool require_gpu) {
+                         int n_anchors, int nprobe, bool require_gpu,
+                         const std::string& opencl_lib) {
                  auto info = arr.request();
                  return new SpeedEngine((const float*)info.ptr, (int)info.shape[0], dim,
-                                        (Metric)metric, n_anchors, nprobe, require_gpu);
+                                        (Metric)metric, n_anchors, nprobe, require_gpu,
+                                        opencl_lib);
              }),
              py::arg("corpus_f32"), py::arg("dim"), py::arg("metric"),
              py::arg("n_anchors") = 0, py::arg("nprobe") = 4,
-             py::arg("require_gpu") = false)
+             py::arg("require_gpu") = false, py::arg("opencl_lib") = "")
         // M3 (v1.8.0): construtor uint8 — evita a cópia float32 extra na camada
         // Python (build_engine(speed=True) fazia arr.astype(float32) na RAM).
         // O C++ converte internamente em corpus_f32_, mas sem a cópia Python 4×.
         // Permite ao DevAI processar corpora uint8 grandes (~10M+) com menor
         // pico de RAM e sem o passo de conversão explícito.
         .def(py::init([](py::array_t<uint8_t, py::array::c_style> arr, int dim, int metric,
-                         int n_anchors, int nprobe, bool require_gpu) {
+                         int n_anchors, int nprobe, bool require_gpu,
+                         const std::string& opencl_lib) {
                  auto info = arr.request();
                  return new SpeedEngine((const uint8_t*)info.ptr, (int)info.shape[0], dim,
-                                        (Metric)metric, n_anchors, nprobe, require_gpu);
+                                        (Metric)metric, n_anchors, nprobe, require_gpu,
+                                        opencl_lib);
              }),
              py::arg("corpus_u8"), py::arg("dim"), py::arg("metric"),
              py::arg("n_anchors") = 0, py::arg("nprobe") = 4,
-             py::arg("require_gpu") = false)
+             py::arg("require_gpu") = false, py::arg("opencl_lib") = "")
         .def("search",
              [](const SpeedEngine& self, py::array_t<float, py::array::c_style> q, int k) {
                  auto info = q.request();
