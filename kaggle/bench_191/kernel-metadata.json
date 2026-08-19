@@ -1,0 +1,19 @@
+{
+  "id": "kleniopadilha/winnex-madhava-1-9-1-honest",
+  "id_no": 0,
+  "title": "winnex madhava 1 9 1 honest",
+  "code_file": "winnex-madhava-1-9-1-honest.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "model_strategy": "none",
+  "competition_sources": [],
+  "dataset_sources": [
+    "rtatman/glove-global-vectors-for-word-representation",
+    "shurangwu/bigann-100m",
+    "tomtum/openai-arxiv-embeddings"
+  ],
+  "kernel_sources": []
+}
