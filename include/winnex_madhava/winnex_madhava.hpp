@@ -103,6 +103,13 @@ struct Config {
 
     // Parallelism
     int n_threads = 0;        // 0 = use omp_get_max_threads()
+
+    // Audit hook: when true, search() captures the per-document pruning
+    // decision AT THE MOMENT it is made (audit_ids/audit_ubs/audit_threshold
+    // on SearchResult). This is what makes search_audited a WITNESS of the
+    // motor's exact decision, not a recomputing judge. Default false so the
+    // normal search path costs nothing extra.
+    bool audit_record = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -131,6 +138,29 @@ struct SearchResult {
     long long pruned_by_bound = 0;
     long long pruned_by_prefilter = 0;
     long long exact_evals = 0;
+
+    // AUDIT HOOK (captured AT the decision moment, not recomputed after):
+    //   audit_threshold — the exact K-th best score (heap[0]) the motor used
+    //                      to prove pruning. This is the TRUE threshold the
+    //                      motor decided with (not a recomputed one).
+    //   audit_ids        — the doc_ids the bound PROVED outside top-K, in the
+    //                      order the motor evaluated them (all N in stage-1).
+    //   audit_ubs        — per-id the Cauchy-Schwarz upper bound that the
+    //                      motor computed AT THAT MOMENT (ub_raw stage-1).
+    //                      audit_ids[i] is provably excluded because its
+    //                      audit_ubs[i] < audit_threshold (cosine) or its
+    //                      L2-lower-bound > audit_threshold (L2).
+    //   audit_l2_lbs     — per-id the L2² lower bound (only for L2 metric).
+    //   These fields make the audit a WITNESS, not a judge: the certificate
+    //   is byte-for-byte the motor's own pruning decision. Filled only when
+    //   the engine is configured with audit_record=true (see Config).
+    double audit_threshold = 0.0;
+    std::vector<int64_t> audit_ids;
+    std::vector<float> audit_ubs;
+    std::vector<float> audit_l2_lbs;
+    // Per-id residual_norm = e(v)·e(q) that the motor used in the UB at
+    // decision time (so the certificate can report it without recomputing).
+    std::vector<float> audit_residuals;
 };
 
 // ---------------------------------------------------------------------------
@@ -211,6 +241,11 @@ public:
     // Search: bound pruning (top-k1/k2) + optional post-filter.
     SearchResult search(const float* query, const std::vector<float>& query_norm) const;
     SearchResult search(const float* query) const; // computes norm internally
+
+    // Search with the audit hook forced on (the witness path). The normal
+    // search() uses cfg_.audit_record; this one always captures the
+    // per-document pruning decision so search_audited can read it.
+    SearchResult search_with_audit(const float* query) const;
 
     // M1 (v1.8.0): batch search — processa nq queries de uma vez.
     // Útil para o DevAI (batch RAG) e para a ingestão: evita o overhead de

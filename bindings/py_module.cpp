@@ -74,7 +74,12 @@ PYBIND11_MODULE(_winnex_madhava, m) {
         .def_readonly("modulation_gain", &SearchResult::modulation_gain)
         .def_readonly("pruned_by_bound", &SearchResult::pruned_by_bound)
         .def_readonly("pruned_by_prefilter", &SearchResult::pruned_by_prefilter)
-        .def_readonly("exact_evals", &SearchResult::exact_evals);
+        .def_readonly("exact_evals", &SearchResult::exact_evals)
+        .def_readonly("audit_threshold", &SearchResult::audit_threshold)
+        .def_readonly("audit_ids", &SearchResult::audit_ids)
+        .def_readonly("audit_ubs", &SearchResult::audit_ubs)
+        .def_readonly("audit_l2_lbs", &SearchResult::audit_l2_lbs)
+        .def_readonly("audit_residuals", &SearchResult::audit_residuals);
 
     py::class_<MadhavaL2>(m, "MadhavaL2")
         .def(py::init<const Config&>())

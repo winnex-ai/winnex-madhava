@@ -117,3 +117,47 @@ def test_certificate_consistent_with_pruned_by_bound(cosine_engine):
     r_full = cosine_engine.search_audited(query, k=10, max_audit_records=n)
     assert r_full["audit_excluded"] <= base.pruned_by_bound
     assert r_full["audit_candidates"] == n  # whole corpus examined
+
+
+def test_certificate_high_dim_nonunit_norm_query():
+    """REGRESSION for the arXiv d=1536 bug (1.9.0): the certificate must stay
+    sound when the query has a raw norm != 1 (real embeddings are not
+    pre-normalized). The old code used `qn * qn` (raw norm) in the query
+    residual instead of `qn_eff * qn_eff` (=1.0 for cosine+normalize), which
+    widened the certificate bounds vs the motor and produced thousands of
+    false 'excluded' records (measured: 462/973 violations on arXiv d=1536).
+
+    With the fix: certificate_violations == 0 and audit_excluded <=
+    pruned_by_bound for every query, at high dimension with non-unit norms.
+    """
+    rng = np.random.default_rng(7)
+    N, D, K = 3000, 1536, 10
+    # Structured manifold (like real embeddings), scaled so norms are NOT 1.
+    ncomp = 16
+    comp = rng.standard_normal((ncomp, D)).astype(np.float32)
+    coef = rng.standard_normal((N, ncomp)).astype(np.float32)
+    X = (coef @ comp).astype(np.float32) * 0.35
+    Q = X[-30:].copy()
+    Xc = X[:-30].copy()
+    # Confirm the trigger condition: raw query norm is far from 1.0.
+    raw_norm = float(np.mean(np.linalg.norm(Q, axis=1)))
+    assert raw_norm > 2.0, f"test no longer triggers the bug (norm={raw_norm})"
+
+    for basis in ("random", "pca_corpus"):
+        eng = winnex_madhava.build_engine(
+            Xc, dim=D, metric="cosine", quant="none", basis=basis,
+            stage1_dim=min(192, D), stage2_dim=0, k=K, normalize_input=True)
+        n_viol = 0
+        n_cons = 0
+        n = eng.num_vectors()
+        for q in Q:
+            ar = eng.search_audited(q, k=K, max_audit_records=500)
+            exact = set(eng.search_exact(q).indices)
+            n_viol += sum(1 for rec in ar["audit"]
+                          if rec["excluded"] and rec["doc_id"] in exact)
+            base = eng.search(q)
+            ar_full = eng.search_audited(q, k=K, max_audit_records=n)
+            if ar_full["audit_excluded"] <= base.pruned_by_bound:
+                n_cons += 1
+        assert n_viol == 0, f"{basis}: {n_viol} false-excluded docs in top-K"
+        assert n_cons == len(Q), f"{basis}: consistency {n_cons}/{len(Q)}"
