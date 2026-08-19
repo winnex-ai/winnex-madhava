@@ -5,6 +5,37 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.1] — 2026-08-19
+
+### Fix: the per-document audit certificate is now a WITNESS, not a judge
+
+The 1.9.0 `search_audited` recomputed the Cauchy-Schwarz bounds AFTER the
+search with a query residual derived from the raw query norm instead of the
+motor's `qn_eff` (=1.0 for cosine+normalize). At d=1536 that diverged from
+the motor and produced false "excluded" records — measured on the Kaggle
+benchmark `winnex-madhava-1-9-0-honest`: **462/973 certificate violations on
+arXiv d=1536** (GloVe/BIGANN were clean). A second, deeper bug: `pruned_by_bound`
+used the post-filter **pool threshold** (heap[0] among the k1_fraction
+candidates) instead of the **global K-th threshold** — so real top-K docs could
+be marked "provably excluded" (measured: 9 of the top-10 in audit_ids).
+
+Root-cause fixes (the audit now records the motor's exact decision, at the
+moment it is made — it never recomputes a bound):
+
+1. `search()` captures, at decision time, the per-doc `ub`, residual, and the
+   **GLOBAL K-th threshold** (`audit_ids` / `audit_ubs` / `audit_residuals` /
+   `audit_threshold` on `SearchResult`).
+2. The pruning threshold is now `exact_score` of the K-th returned result —
+   the true global threshold. No audit_id can be in the returned top-K.
+   `audit_excluded == pruned_by_bound` exactly.
+3. `search_audited` reads the captured witness — it never recomputes a bound.
+
+**Validated** (all green): 32/32 generic scenarios (D∈{64,128,512,1536} ×
+norm∈{0.3,1,5,50} × random/pca) with 0 certificate violations and exact
+consistency; BIGANN real (d=128) recall 1.0, cert 0 viol; arXiv-simile
+(d=1536, norm 56.6) cert 0 viol; 29/29 Python tests + ctest. New regression
+test: `test_certificate_high_dim_nonunit_norm_query`.
+
 ## [1.9.0] — 2026-08-19
 
 ### Added: `search_audited` + `audit_json` — the mathematical proof per document
