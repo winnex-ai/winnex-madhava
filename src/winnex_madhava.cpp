@@ -1373,4 +1373,171 @@ std::string MadhavaL2::audit_json(const float* query, int64_t k,
     return json;
 }
 
+// ---------------------------------------------------------------------------
+// Lightweight audited search — the production commitment path
+// ---------------------------------------------------------------------------
+// Returns a compact AuditCommitment instead of the full O(N) certificate:
+//   - total_excluded_count: docs the bound PROVED outside the exact top-K,
+//   - global_threshold:     the exact score of the K-th result (the true
+//                           global threshold the motor decided with),
+//   - sampled_records:      a DETERMINISTIC reservoir sample (up to
+//                           max_sample) of the excluded docs nearest the
+//                           boundary — for quick spot-check audit.
+//
+// Memory: O(max_sample), NOT O(N) — the motor never materializes the excluded
+// list. The Python compliance service (tracer-gov/tracer-med) signs this
+// commitment with Ed25519 (key held outside the C++ binary) for
+// non-repudiation, then stores the ~500-byte signed record in the WORM.
+//
+// The sample is deterministic (fixed PRNG seed derived from the query hash +
+// the engine seed): the same query always yields the same sampled doc_ids, so
+// an auditor can reproduce it. The sample is biased to the boundary (docs
+// whose bound is nearest the threshold — the ones regulators care about),
+// then reservoir-filled with a deterministic stride for the rest.
+AuditCommitment MadhavaL2::search_with_commitment(const float* query, int64_t k,
+                                                  int64_t max_sample) const {
+    AuditCommitment out;
+    if (!built_) return out;
+    int N = n_, D = cfg_.dim, s1 = cfg_.stage1_dim, s2 = cfg_.stage2_dim, K = cfg_.k;
+    if (k > 0) K = (int)std::min<int64_t>(k, K);
+    bool is_l2 = (cfg_.metric == Metric::L2);
+    bool normalize = (cfg_.metric == Metric::Cosine) && cfg_.normalize_input;
+    auto t0 = std::chrono::high_resolution_clock::now();
+
+    // --- Reuse the exact same search path as search() to get the real
+    // top-K + global threshold. We run search() (which is additive and
+    // already returns the post-filter exact top-K + audit_threshold). ---
+    SearchResult base = search(query);
+    out.indices = base.indices;
+    out.bound_pairs = base.bound_pairs;
+    out.bound_violations = base.bound_violations;
+    out.latency_ms = base.latency_ms;
+
+    // The global K-th threshold: exact score of the K-th returned result.
+    // (Mirrors the 1.9.1 witness fix — the certificate must use the TRUE
+    // global threshold, not a pool threshold.)
+    if ((int)out.indices.size() < K || K <= 0) {
+        out.global_threshold = 0.0f;
+        out.total_excluded_count = 0;
+        return out;
+    }
+    float worst = exact_score(out.indices[K - 1], query);
+    out.global_threshold = worst;
+
+    // Query projections (same as search() Stage-1) for the bound scan.
+    float qn = std::sqrt(dot_f32(query, query, D));
+    float qn_eff = normalize ? 1.0f : qn;
+    std::vector<float> qbuf;
+    const float* qproj = query;
+    if (normalize && qn > 1e-10f) {
+        qbuf.resize((size_t)D);
+        float inv = 1.0f / qn;
+        for (int j = 0; j < D; j++) qbuf[j] = query[j] * inv;
+        qproj = qbuf.data();
+    }
+    float pq1[256];
+    float q1s = 0;
+    for (int j = 0; j < s1; j++) { pq1[j] = dot_f32(qproj, P1_ + (size_t)j * D, D); q1s += pq1[j] * pq1[j]; }
+    float qr1 = std::sqrt(std::max(0.0f, qn_eff * qn_eff - q1s));
+    float qm1 = 0;
+    if (cfg_.quant == QuantMode::Int8)
+        for (int j = 0; j < s1; j++) qm1 += 0.5f * pr1_scale_[j] * std::fabs(pq1[j]);
+    float qn2 = qn_eff * qn_eff;
+
+    // --- Count excluded + deterministic boundary-biased sample ---
+    // Deterministic PRNG: seed from the query hash + engine seed, so the
+    // same query always yields the same sample (reproducible by an auditor).
+    // We do NOT use a cryptographic RNG here — determinism is the goal.
+    uint32_t seed = (uint32_t)cfg_.seed;
+    for (int j = 0; j < std::min(D, 16); j++) {
+        // fold the first bytes of the (normalized) query into the seed
+        uint32_t bits; std::memcpy(&bits, qproj + j, sizeof(uint32_t));
+        seed ^= bits + 0x9e3779b9u + (seed << 6) + (seed >> 2);
+    }
+    std::mt19937 rng(seed);
+
+    long long excluded = 0;
+    const int64_t ms = std::max<int64_t>(0, max_sample);
+    out.sampled_records.clear();
+    out.sampled_records.reserve((size_t)std::min<int64_t>(ms, 4096));
+
+    // Two-tier deterministic sampling:
+    //  (1) Boundary tier: docs whose bound is within `boundary_band` of the
+    //      threshold are the highest-value audit records. We collect them
+    //      directly (up to max_sample) — deterministic, no RNG.
+    //  (2) Reservoir tier: if the boundary band is empty (or we want a spread
+    //      sample), fill the rest with a deterministic reservoir over the
+    //      excluded set (seeded RNG → reproducible).
+    // This biases the sample to the boundary while staying deterministic and
+    // bounded. A fixed band of ~1% of the threshold range covers the docs
+    // nearest the cut — the ones regulators spot-check.
+    float band = 0.01f * (1.0f + std::fabs(worst));
+    for (int i = 0; i < N; i++) {
+        float ub = ub_raw(i, 1, pq1, qr1, qm1);
+        bool excl;
+        if (is_l2) {
+            float lb = vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub;
+            excl = lb > worst;
+        } else {
+            excl = ub < worst;
+        }
+        if (!excl) continue;
+        excluded++;
+
+        if ((int64_t)out.sampled_records.size() < ms) {
+            // Boundary tier first (nearest the threshold).
+            float gap = is_l2 ? (vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub) - worst
+                              : worst - ub;
+            if (gap < band || (int64_t)out.sampled_records.size() < 4) {
+                AuditSample s; s.doc_id = i; s.upper_bound = ub; s.excluded = true;
+                out.sampled_records.push_back(s);
+            }
+        }
+    }
+    // Reservoir fill: if we have fewer than max_sample, top up with a
+    // deterministic spread over the excluded set (seeded RNG → reproducible).
+    // We re-walk in a second pass ONLY if the sample is not yet full, keeping
+    // the common case (boundary-rich) O(N) total.
+    if ((int64_t)out.sampled_records.size() < ms && excluded > (int64_t)out.sampled_records.size()) {
+        // Deterministic reservoir: for the first `seen` excluded we take the
+        // slot; afterwards replace with probability ms/seen (seeded).
+        long long seen = 0;
+        std::vector<AuditSample> reservoir;
+        reservoir.reserve((size_t)ms);
+        for (int i = 0; i < N; i++) {
+            float ub = ub_raw(i, 1, pq1, qr1, qm1);
+            bool excl;
+            if (is_l2) {
+                float lb = vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub;
+                excl = lb > worst;
+            } else {
+                excl = ub < worst;
+            }
+            if (!excl) continue;
+            seen++;
+            if ((int64_t)reservoir.size() < ms) {
+                AuditSample s; s.doc_id = i; s.upper_bound = ub; s.excluded = true;
+                reservoir.push_back(s);
+            } else {
+                uint64_t r = rng();
+                if ((r % (uint64_t)seen) < (uint64_t)ms) {
+                    size_t slot = (size_t)(r % (uint64_t)ms);
+                    reservoir[slot].doc_id = i;
+                    reservoir[slot].upper_bound = ub;
+                }
+            }
+        }
+        // Merge: boundary samples first, then reservoir fill.
+        for (auto& s : reservoir) {
+            if ((int64_t)out.sampled_records.size() >= ms) break;
+            out.sampled_records.push_back(s);
+        }
+    }
+
+    out.total_excluded_count = excluded;
+    out.latency_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::high_resolution_clock::now() - t0).count();
+    return out;
+}
+
 } // namespace winnex_madhava

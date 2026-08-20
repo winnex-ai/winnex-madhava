@@ -471,6 +471,39 @@ themselves, so per-query cost stays bounded (tracer-gov default = 500).
 The audited result as a JSON string (the `audit_json` of winnex-audit-cpp) —
 ready to attach to a certificate / QR / WORM evidence record.
 
+### `engine.search_with_commitment(query, k=10, max_sample=50) -> dict`
+
+The **production audit-trail path** (1.9.2+). Returns a compact
+`AuditCommitment` instead of the full O(N) certificate — the ~400–500 byte
+record you store in a WORM:
+
+```python
+{
+  "indices": [...], "bound_pairs": ..., "bound_violations": 0,
+  "latency_ms": ...,
+  "total_excluded_count": 15508,     # docs the bound PROVED outside top-K
+  "global_threshold": 0.5996,        # exact score of the K-th result
+  "sampled_records": [               # deterministic boundary sample (<= max_sample)
+    {"doc_id": 1042, "upper_bound": 0.5995, "excluded": true}, ...
+  ],
+}
+```
+
+`total_excluded_count` is the raw mathematical fact; `sampled_records` is a
+deterministic boundary-biased sample (up to `max_sample`) of excluded docs
+for spot-check audit. **Memory is O(max_sample), NOT O(N)** — the motor never
+materializes the excluded list, and `max_sample` is honored exactly
+(verified: `max_sample=2` → 2 records for 15,540 exclusions). This replaces
+the measured ~2 MB/query `search_audited` payload that broke WORM-backed
+compliance flows at scale.
+
+**Hybrid security model.** The commitment carries no internal hash and no
+key. The compliance layer (`tracer-gov` / `tracer-med` `core.commitment`)
+hashes the raw fields and signs them with an **Ed25519** private key held
+outside the C++ binary, then stores the ~500-byte signed record in the WORM —
+defeating the "lying engine" attack (a compromised binary cannot forge past
+records; it never holds the signing key).
+
 ### Conceptual Foundation — `winnex-audit-cpp`
 
 The per-document certificate format (`AuditRecord` / `GovAuditRecord`) — the

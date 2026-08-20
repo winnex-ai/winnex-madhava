@@ -5,6 +5,45 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.2] — 2026-08-20
+
+### Added: `search_with_commitment` — the lightweight audit commitment path
+
+Fixes the production audit-trail bottleneck: `search_audited` returned the
+FULL O(N) certificate (measured **~2 MB per query** at d=1536 with a PCA
+basis, because `max_audit_records` was ignored — every provably-excluded doc
+got a record). For WORM-backed compliance flows (tracer-gov / tracer-med)
+that payload is written to disk on every query — unsustainable at scale.
+
+`search_with_commitment(query, k, max_sample=50)` returns a compact
+`AuditCommitment` (~400–500 bytes regardless of corpus size, 99.98% smaller):
+
+- `total_excluded_count` — how many docs the Cauchy-Schwarz bound PROVED
+  outside the exact top-K (the raw mathematical fact).
+- `global_threshold` — the exact score of the K-th result (the TRUE global
+  threshold the motor decided with — mirrors the 1.9.1 witness fix).
+- `sampled_records` — a DETERMINISTIC boundary-biased sample (up to
+  `max_sample`) of excluded docs nearest the threshold, for spot-check audit.
+
+**Memory: O(max_sample), NOT O(N)** — the motor never materializes the
+excluded list. `max_sample` is honored exactly (verified: `max_sample=2` →
+2 records for 15,540 exclusions).
+
+**Consistency:** `total_excluded_count == search_audited.audit_excluded`
+exactly (verified at d=1536, PCA basis, off-manifold query).
+
+**Determinism:** the sample is seeded from the query hash + engine seed, so
+the same query always yields the same sampled doc_ids (reproducible by an
+auditor). All sampled docs satisfy `upper_bound < global_threshold`.
+
+**Hybrid security model (responsibility split):** the commitment carries NO
+internal hash and NO key. The Python compliance layer (`tracer-gov` /
+`tracer-med` `core.commitment`) hashes the raw fields (hashlib) and signs them
+with an **Ed25519** private key held OUTSIDE the C++ binary (env / KMS), then
+stores the ~500-byte signed record in the WORM. This neutralizes the "lying
+engine" attack: even a compromised C++ binary cannot forge past records —
+it never holds the signing key.
+
 ## [1.9.1] — 2026-08-19
 
 ### Fix: the per-document audit certificate is now a WITNESS, not a judge

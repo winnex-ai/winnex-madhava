@@ -190,6 +190,32 @@ PYBIND11_MODULE(_winnex_madhava, m) {
                  return self.audit_json((const float*)info.ptr, k, max_audit_records);
              },
              py::arg("query"), py::arg("k") = 10, py::arg("max_audit_records") = 500)
+        .def("search_with_commitment",
+             [](const MadhavaL2& self, py::array_t<float, py::array::c_style | py::array::forcecast> q,
+                 int64_t k, int64_t max_sample) {
+                 auto info = q.request();
+                 if (info.ndim != 1 || (int)info.shape[0] != self.dim())
+                     throw std::runtime_error("query must be float32 of length dim");
+                 auto c = self.search_with_commitment((const float*)info.ptr, k, max_sample);
+                 py::dict d;
+                 d["indices"] = c.indices;
+                 d["bound_pairs"] = c.bound_pairs;
+                 d["bound_violations"] = c.bound_violations;
+                 d["latency_ms"] = c.latency_ms;
+                 d["total_excluded_count"] = c.total_excluded_count;
+                 d["global_threshold"] = c.global_threshold;
+                 py::list samples;
+                 for (const auto& s : c.sampled_records) {
+                     py::dict sd;
+                     sd["doc_id"] = (int64_t)s.doc_id;
+                     sd["upper_bound"] = s.upper_bound;
+                     sd["excluded"] = s.excluded;
+                     samples.append(sd);
+                 }
+                 d["sampled_records"] = samples;
+                 return d;
+             },
+             py::arg("query"), py::arg("k") = 10, py::arg("max_sample") = 50)
         .def("search_batch",
              [](const MadhavaL2& self, py::array_t<float, py::array::c_style | py::array::forcecast> q, int nq, int k) {
                  auto info = q.request();

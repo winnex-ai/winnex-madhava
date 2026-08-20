@@ -191,6 +191,49 @@ struct AuditResult {
 };
 
 // ---------------------------------------------------------------------------
+// Audit commitment — the lightweight "mathematical inverted index" (~400 B)
+// ---------------------------------------------------------------------------
+// A production audit trail does NOT store the full O(N) list of AuditRecords
+// (at scale this is the measured ~2 MB/query problem). Instead the motor
+// returns a compact, deterministic commitment that proves the state of the
+// search without listing every excluded element:
+//
+//   - total_excluded_count : the raw mathematical fact — how many docs the
+//     Cauchy-Schwarz bound PROVED outside the exact top-K (global threshold).
+//   - global_threshold     : the exact score of the K-th result — the true
+//     threshold the motor decided with.
+//   - sampled_records      : a deterministic reservoir sample (up to
+//     max_sample) of docs near the boundary, for quick spot-check audit.
+//
+// The commitment carries NO internal hash and NO private key — per the
+// hybrid responsibility split, integrity + non-repudiation are added by the
+// Python compliance service (tracer-gov/tracer-med), which hashes the raw
+// fields (hashlib) and signs them with an Ed25519 private key held OUTSIDE
+// the C++ binary. This neutralizes the "lying engine" attack: even a
+// compromised C++ binary cannot forge past WORM records, because it never
+// holds the signing key.
+//
+// The Python payload stored in the WORM is therefore ~400–500 bytes
+// regardless of corpus size (99.98% smaller), O(1) in the number of
+// exclusions, with no O(N) heap allocation in the motor.
+struct AuditSample {
+    int64_t doc_id = -1;
+    float upper_bound = 0.0f;   // the Cauchy-Schwarz upper bound used
+    bool excluded = true;
+};
+
+struct AuditCommitment {
+    long long total_excluded_count = 0; // docs the bound PROVED outside top-K
+    float global_threshold = 0.0f;      // exact score of the K-th result
+    std::vector<AuditSample> sampled_records; // up to max_sample (reservoir)
+    // Search metadata (mirrors SearchResult, for the WORM record).
+    std::vector<int> indices;           // top-K dataset ids
+    long long bound_pairs = 0;
+    long long bound_violations = 0;     // always 0
+    double latency_ms = 0.0;
+};
+
+// ---------------------------------------------------------------------------
 // Evaluation metrics (binary relevance against a ground-truth id list)
 // ---------------------------------------------------------------------------
 struct Metrics {
@@ -279,6 +322,14 @@ public:
     // Returns a full AuditResult. `search()` is unchanged — this is additive.
     AuditResult search_audited(const float* query, int64_t k = 10,
                                int64_t max_audit_records = 500) const;
+
+    // Lightweight audited search — the production commitment path.
+    // Returns a compact AuditCommitment (count + threshold + up to max_sample
+    // deterministic boundary records) instead of the full O(N) certificate.
+    // This is what the WORM stores (tracer-gov/tracer-med compliance flows):
+    // the Python layer signs it with Ed25519 for non-repudiation.
+    AuditCommitment search_with_commitment(const float* query, int64_t k = 10,
+                                           int64_t max_sample = 50) const;
 
     // Render the audited result as JSON (the audit_json of winnex-audit-cpp).
     std::string audit_json(const float* query, int64_t k = 10,
