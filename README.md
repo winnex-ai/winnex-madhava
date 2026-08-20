@@ -471,6 +471,27 @@ themselves, so per-query cost stays bounded (tracer-gov default = 500).
 The audited result as a JSON string (the `audit_json` of winnex-audit-cpp) —
 ready to attach to a certificate / QR / WORM evidence record.
 
+### Conceptual Foundation — `winnex-audit-cpp`
+
+The per-document certificate format (`AuditRecord` / `GovAuditRecord`) — the
+`doc_id`, `true_cosine`, `projected_cosine`, `residual_norm`, `upper_bound`,
+`threshold`, `excluded`, `stage` contract this motor emits byte-for-byte —
+originates from the
+[`winnex-audit-cpp`](https://github.com/winnex-ai/winnex-audit-cpp) repository.
+That repository is the **source of the specification** (and the
+[pre-patent mathematical foundation](https://doi.org/10.5281/zenodo.21182479)),
+**not a runtime dependency**: the certificate is produced natively inside this
+motor's C++ search loop (the Witness Architecture), so no separate audit layer
+is required. Audit attempts performed *outside* the motor diverge at high
+dimension (measured: 462/973 false "excluded" on arXiv d=1536 in the
+intermediate 1.9.0) — the Witness hook captures the proof at the exact moment
+the decision is made, using the exact global threshold of that instant.
+
+- winnex-audit-cpp (conceptual foundation / spec): <https://github.com/winnex-ai/winnex-audit-cpp>
+- Audit Module Zenodo record (archived, spec): <https://doi.org/10.5281/zenodo.22025292>
+- Madhava Witness Architecture record: <https://doi.org/10.5281/zenodo.22025293>
+- Kaggle benchmark (1.9.1 honest): <https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-9-1-honest>
+
 ### `winnex_madhava.benchmark_vs_groundtruth(engine, queries, gt_ids, *, query_alignment=1, k=None) -> dict`
 
 Evaluate against ground-truth id lists. Returns `recall_at_k`, `ndcg_at_k`,
