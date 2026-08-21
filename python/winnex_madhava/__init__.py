@@ -82,7 +82,7 @@ recall_at_k = _native.recall_at_k
 ndcg_at_k = _native.ndcg_at_k
 read_bigann_groundtruth = _native.read_bigann_groundtruth
 
-__version__ = "1.9.2"
+__version__ = "1.9.3"
 __all__ = [
     "Config",
     "SearchResult",

@@ -5,6 +5,17 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.3] — 2026-08-21
+
+### Changed: parallel O(N) audit-bound scan
+
+- The `pruned_by_bound`/audit-hook scan (runs on EVERY `search()`) is now
+  parallelized with OpenMP (per-thread buffers + deterministic merge in thread
+  order). `#include <omp.h>` is conditional; helpers `wm_omp_max_threads()` /
+  `wm_omp_thread_num()` fall back to single-thread when compiled without
+  `-fopenmp`. Cuts query-path latency on large corpora (Gargalo #2 of the
+  Tracer × Liferay audit).
+
 ## [1.9.2] — 2026-08-20
 
 ### Added: `search_with_commitment` — the lightweight audit commitment path

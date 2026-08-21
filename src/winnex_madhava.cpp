@@ -30,6 +30,10 @@
 #include <chrono>
 #include <utility>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 #if defined(__AVX2__) && defined(__FMA__)
 #include <immintrin.h>
 #endif
@@ -37,6 +41,23 @@
 namespace winnex_madhava {
 
 namespace {
+
+// OpenMP thread helpers with a no-OpenMP fallback (compile without -fopenmp).
+inline int wm_omp_max_threads() {
+#ifdef _OPENMP
+    return omp_get_max_threads();
+#else
+    return 1;
+#endif
+}
+
+inline int wm_omp_thread_num() {
+#ifdef _OPENMP
+    return omp_get_thread_num();
+#else
+    return 0;
+#endif
+}
 
 inline float dot_f32(const float* a, const float* b, int d) {
 #if defined(__AVX2__) && defined(__FMA__)
@@ -1001,27 +1022,56 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
         out.audit_ubs.reserve(std::min(N, 4096));
         out.audit_residuals.reserve(std::min(N, 4096));
         if (is_l2) out.audit_l2_lbs.reserve(std::min(N, 4096));
-        for (int i = 0; i < N; i++) {
-            float ub = ub_raw(i, 1, pq1, qr1, qm1);
-            float resid = e1_[i] * qr1;
-            if (is_l2) {
-                float lb = vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub;
-                if (lb > worst) {
-                    out.pruned_by_bound++;
-                    out.audit_ids.push_back(i);
-                    out.audit_ubs.push_back(ub);
-                    out.audit_residuals.push_back(resid);
-                    out.audit_l2_lbs.push_back(lb);
-                }
-            } else {
-                if (ub < worst) {
-                    out.pruned_by_bound++;
-                    out.audit_ids.push_back(i);
-                    out.audit_ubs.push_back(ub);
-                    out.audit_residuals.push_back(resid);
+        // Parallel O(N) bound scan (Gargalo #2): the audit hook runs on EVERY
+        // search, so this loop must not serialize the query path. Each thread
+        // keeps its own buffers (ub_raw/query projections are read-only and
+        // thread-safe after build); the per-thread lists are concatenated in
+        // thread order, preserving the deterministic ascending doc_id order.
+        long long pruned = 0;
+        {
+            const int nthreads = std::max(1, wm_omp_max_threads());
+            std::vector<std::vector<int>> t_ids(nthreads);
+            std::vector<std::vector<float>> t_ubs(nthreads);
+            std::vector<std::vector<float>> t_res(nthreads);
+            std::vector<std::vector<float>> t_lbs(nthreads);
+            std::vector<long long> t_count(nthreads, 0);
+#pragma omp parallel for
+            for (int i = 0; i < N; i++) {
+                const int t = wm_omp_thread_num();
+                float ub = ub_raw(i, 1, pq1, qr1, qm1);
+                float resid = e1_[i] * qr1;
+                if (is_l2) {
+                    float lb = vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub;
+                    if (lb > worst) {
+                        t_ids[t].push_back(i);
+                        t_ubs[t].push_back(ub);
+                        t_res[t].push_back(resid);
+                        t_lbs[t].push_back(lb);
+                        t_count[t]++;
+                    }
+                } else {
+                    if (ub < worst) {
+                        t_ids[t].push_back(i);
+                        t_ubs[t].push_back(ub);
+                        t_res[t].push_back(resid);
+                        t_count[t]++;
+                    }
                 }
             }
+            for (int t = 0; t < nthreads; t++) {
+                pruned += t_count[t];
+                out.audit_ids.insert(out.audit_ids.end(),
+                                     t_ids[t].begin(), t_ids[t].end());
+                out.audit_ubs.insert(out.audit_ubs.end(),
+                                     t_ubs[t].begin(), t_ubs[t].end());
+                out.audit_residuals.insert(out.audit_residuals.end(),
+                                           t_res[t].begin(), t_res[t].end());
+                if (is_l2)
+                    out.audit_l2_lbs.insert(out.audit_l2_lbs.end(),
+                                            t_lbs[t].begin(), t_lbs[t].end());
+            }
         }
+        out.pruned_by_bound = pruned;
     }
     // prefilter = what the fixed cutoff discarded WITHOUT a certificate.
     // Clamp: n_exact and pruned_by_bound are not disjoint.
