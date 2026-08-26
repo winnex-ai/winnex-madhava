@@ -55,12 +55,8 @@ pip install winnex-madhava
 wheel (manylinux x86-64); a C++20 compiler + CMake ≥ 3.20 are needed only when
 building from source.
 
-> **⚠️ Python version support (important).** The pre-built manylinux wheel is
-> currently **CPython 3.12 only**. On 3.8–3.11, pip falls back to the sdist
-> and compiles from source, which requires a C++20 compiler + CMake on the
-> machine. If you are on 3.8–3.11 and get a build error, either install a
-> C++20 toolchain or use Python 3.12. Wider wheel coverage (cp38–cp311) is on
-> the roadmap.
+> **Python version support.** Pre-built manylinux wheels ship for **CPython
+> 3.10, 3.11 and 3.12** (cibuildwheel). Python ≥ 3.10 required.
 >
 > Installing straight from this repo works too:
 >
@@ -868,11 +864,11 @@ engine = winnex_madhava.build_engine(embeddings, dim=128, k=10,
                                      metric="cosine")
 ```
 
-### `requires-python >= 3.8`, but pre-built wheel is CPython 3.12 only
+### `requires-python >= 3.10` with pre-built wheels for 3.10/3.11/3.12
 
-See [Installation](#installation). 3.8–3.11 installs build from source and
-needs a C++20 toolchain. If `pip install` starts compiling, you are on an
-unsupported wheel path.
+Wheels ship for CPython 3.10, 3.11 and 3.12 (manylinux). Installing on any of
+these pulls the pre-built wheel — no compiler needed. Only non-x86-64 or
+future Python versions fall back to building from source.
 
 ### The guarantee is per-document bound-correctness, not "great recall"
 

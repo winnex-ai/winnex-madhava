@@ -10,10 +10,9 @@ name: publish
 #   Workflow name     : publish.yml
 #   Environment name  : publish
 #
-# The wheel is built inside the official PyPA manylinux Docker image so it
-# carries a broad manylinux platform tag (not a host-specific linux_x86_64).
-# Building on the host (ubuntu-latest) produces a glibc too new for
-# auditwheel to repair — hence the container build.
+# The wheel is built with cibuildwheel (manylinux) for CPython 3.10, 3.11 and
+# 3.12, plus an sdist — so `pip install` works on the common runtimes without
+# compiling from source.
 
 on:
   push:
@@ -23,56 +22,54 @@ on:
 
 permissions:
   contents: read
-  id-token: write    # required for the trusted-publisher OIDC exchange
 
 jobs:
-  build:
+  build-wheels:
+    strategy:
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
     runs-on: ubuntu-latest
-    container: quay.io/pypa/manylinux_2_28_x86_64   # manylinux toolchain
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build sdist and wheel (manylinux container)
-        run: |
-          # /opt/python/cp312-cp312 is the CPython 3.12 build in the image.
-          PY=/opt/python/cp312-cp312/bin/python
-          $PY -m pip install --quiet build
-          $PY -m build
+      - name: Build wheel for cp${{ matrix.python-version }}
+        uses: pypa/cibuildwheel@v2.17
+        with:
+          output-dir: wheelhouse
+        env:
+          CIBW_BUILD: cp${{ matrix.python-version }}-manylinux_x86_64
 
-      - name: Repair wheel to manylinux (auditwheel)
-        run: |
-          /opt/python/cp312-cp312/bin/pip install --quiet auditwheel
-          # In the manylinux container the toolchain is old enough for
-          # auditwheel to tag the wheel as manylinux_2_28 (or lower).
-          /opt/python/cp312-cp312/bin/python -m auditwheel repair \
-            dist/*.whl -w dist/
-          # Remove the un-repaired wheel so only manylinux is uploaded.
-          rm -f dist/*linux_x86_64*.whl
-
-      - name: Upload artifacts
+      - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: dist
-          path: dist/
+          name: wheels-cp${{ matrix.python-version }}
+          path: wheelhouse/*.whl
+
+  build-sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build source distribution
+        run: pipx run build --sdist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
 
   publish:
-    needs: build
+    needs: [build-wheels, build-sdist]
     runs-on: ubuntu-latest
-    # Must match the Environment name registered on the PyPI trusted
-    # publisher (currently: "publish"). Create this environment under
-    # GitHub → Settings → Environments → New environment.
     environment: publish
     permissions:
-      contents: read
       id-token: write
+      contents: read
     steps:
-      - name: Download artifacts
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          name: dist
-          path: dist/
+          path: dist
 
-      - name: Publish to PyPI
+      - name: Publish to PyPI (Trusted Publisher / OIDC)
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: dist/
+          packages-dir: dist

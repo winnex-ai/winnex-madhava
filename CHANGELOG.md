@@ -5,6 +5,18 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.4] — 2026-08-26
+
+### Added: multi-Python wheels (cp310, cp311, cp312) + sdist
+
+- The publish pipeline now builds CPython 3.10, 3.11 AND 3.12 manylinux
+  wheels (cibuildwheel) plus an sdist. Previously only cp312 was published,
+  which broke `pip install` on Python 3.10/3.11 (the common Kaggle runtime) —
+  they had to compile from source.
+- `requires-python` bumped to `>=3.10` (aligned to the wheels we ship).
+- No engine change: identical C++ core to 1.9.3 (early_exit=False default,
+  parallel O(N) audit-bound scan, search_with_commitment).
+
 ## [1.9.3] — 2026-08-21
 
 ### Changed: parallel O(N) audit-bound scan
