@@ -5,41 +5,48 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.9.5] — 2026-08-28
+## [1.9.6] — 2026-08-28
 
-### Changed: PCA basis build (G1 fix) — matrix-free power iteration
+### Changed: PCA basis build (G1) — contiguous subsample + iter cap; revert matrix-free
 
-The `pca_corpus` basis build at high dimension (d≥384) was the documented
-G1 bottleneck (~20-25s at d=1536). Rewritten without changing the bound:
+The `pca_corpus` basis build was tuned after the public 1.9.5 benchmark on
+the Kaggle runtime. Two changes are KEPT (validated, no regression), one is
+REVERTED:
 
-- **Matrix-free power iteration**: the empirical covariance `C = (1/sample)·Σ a·aᵀ`
-  is no longer materialized (D×D, O(D²) memory AND O(sample·D²) bandwidth).
-  `C·v` is computed as `Aᵀ(A·v)/sample` — two O(sample·D) matvecs, ~1600× fewer
-  operations at d=1536, sample=10k. The deflation `C ← C − λ·v·vᵀ` becomes
-  implicit via MGS against all previously found directions (equivalent to
-  working in the deflated subspace).
-- **Cache-friendly matvec**: a transposed copy `AT` (D×sample) makes the
-  second matvec row-major, avoiding the stride-D cache-hostile gather
-  (measured 76s vs 0.24s for the same matvec).
-- **Contiguous subsample**: the PCA subsample read switched from a random
-  gather `base_f32[rng()%n]` (cache-hostile over the 61MB corpus) to a
-  sequential read of the first `sample` rows. i.i.d. for arbitrarily-ordered
-  embeddings; the seed still seeds the power-iteration start, so determinism
-  is preserved for a fixed corpus.
-- **Iteration cap 200 → 30**: the power iteration converges in ~10-30 steps
-  for the dominant directions (subspace similarity = 1.0000 to the 200-step
-  result, measured); the remaining iterations only refine the individual
-  eigenvector without changing the bound `e(v)=sqrt(1−‖Pv‖²)`.
-- **Serial matvec (no OpenMP)**: a parallel matvec with the environment's
-  OMP_NUM_THREADS causes memory-bandwidth oversubscription (measured 22s at
-  OMP_NUM_THREADS=28 vs 0.57s serial for the same work). The serial matvec is
-  already fast in the O(sample·D) matrix-free form.
+- **Contiguous subsample (kept)**: the PCA subsample read switched from a
+  random gather `base_f32[rng()%n]` (cache-hostile over the 61MB corpus at
+  d=1536) to a sequential read of the first `sample` rows. i.i.d. for
+  arbitrarily-ordered embeddings; the seed still seeds the power-iteration
+  start, so determinism is preserved for a fixed corpus.
+- **Iteration cap 200 → 30 (kept)**: the power iteration converges in ~10-30
+  steps for the dominant directions (subspace similarity = 1.0000 to the
+  200-step result, measured); the remaining iterations only refine the
+  individual eigenvector without changing the bound `e(v)=sqrt(1−‖Pv‖²)`.
+- **Matrix-free matvec (REVERTED)**: the 1.9.5 experiment replaced the
+  materialized covariance `C = AᵀA/sample` with `C·v = Aᵀ(A·v)/sample`. The
+  public benchmark showed it REGRESSES low/mid dim: BIGANN d=128 build went
+  0.5s → 11.4s (measured on Kaggle), because `O(2·sample·D·s·iters) ≫
+  O(D²·sample)` when `sample=10k > D`. Reverted to the direct covariance,
+  which is fast across the supported dim range (d=128: 0.05s; d=1536: 1.68s
+  local, ~4s Kaggle).
 
 **Validity preserved**: the bound `UB(v,q)=⟨Pv,Pq⟩+e(v)e(q)` uses the same
 orthonormal basis in the ORIGINAL D-dimensional space. Verified: recall@10=
 1.000 and 0 bound violations across d=64/128/384/1536 × basis
 random/pca_corpus; deterministic basis across runs; dominant subspace
 aligned (cos=1.0) to the true eigendecomposition.
+
+## [1.9.5] — 2026-08-28
+
+### Changed: PCA basis build — matrix-free experiment (SUPERSEDED by 1.9.6)
+
+The `pca_corpus` basis build at high dimension (d≥384) was rewritten
+matrix-free (`C·v = Aᵀ(A·v)/sample`). **Superseded by 1.9.6**: the public
+benchmark showed a regression at low/mid dim (BIGANN d=128: 0.5s → 11.4s).
+See the 1.9.6 entry for the revert and the kept improvements (contiguous
+subsample + iteration cap). Also includes the CI fix (cibuildwheel
+2.17 → 2.23.4 + download-artifact merge-multiple) for the Trusted Publisher
+publish.
 
 ## [1.9.4] — 2026-08-26
 
