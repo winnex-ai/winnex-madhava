@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-winnex-madhava 1.9.5 benchmark — single file. Installs the package from PyPI
+winnex-madhava 1.9.6 benchmark — single file. Installs the package from PyPI
 and tests the madhava C++ motor on public Kaggle datasets. Emits one
 transparent JSON per dataset.
 
 HONEST PROTOCOL (inherited from 1-9-2-honest):
-  - `pip install winnex-madhava==1.9.5` from PyPI (nothing else).
+  - `pip install winnex-madhava==1.9.6` from PyPI (nothing else).
   - Reads public Kaggle datasets (raw, no numpy pre-processing):
       1. GloVe  (rtatman/glove)               d=100
       2. BIGANN (shurangwu/bigann-100m)       d=128 (uint8)
@@ -16,11 +16,14 @@ HONEST PROTOCOL (inherited from 1-9-2-honest):
     search_exact (same query), pruning (k3), bound violations, residual.
   - No numpy ground-truth, no re-ordering, no pipeline assembly.
 
-NEW IN 1.9.5 (the G1 fix — PCA basis build):
-  - The pca_corpus basis build was rewritten matrix-free (see CHANGELOG).
-  - This benchmark ADDS build-time measurement for BOTH bases, so the G1
-    regression (pca_corpus at d=1536, previously ~20-25s) is verifiable
-    on the public Kaggle runtime.
+NEW IN 1.9.6 (the G1 fix — PCA basis build):
+  - The 1.9.5 matrix-free experiment was REVERTED after the public 1.9.5
+    benchmark showed a regression at low/mid dim (BIGANN d=128: 0.5s -> 11.4s).
+    1.9.6 keeps the direct covariance + the two safe wins (contiguous
+    subsample + power-iteration cap 200 -> 30).
+  - This benchmark ADDS build-time measurement for BOTH bases on the public
+    Kaggle runtime, so the pca_corpus build cost is verifiable at d=128 and
+    d=1536 (not an environment artifact).
   - It also measures the pca_sample reduction effect (10k default vs 3k) to
     show the operator the trade-off (build time vs basis quality) is bounded.
 
@@ -32,18 +35,18 @@ import numpy as np
 import subprocess, sys, time, os, json
 
 print("=" * 70, flush=True)
-print("winnex-madhava 1.9.5 — PyPI install + PCA-build benchmark + commitment", flush=True)
+print("winnex-madhava 1.9.6 — PyPI install + PCA-build benchmark + commitment", flush=True)
 print("=" * 70, flush=True)
 
 # ---- 1. Install from PyPI ----
-print("\n[1] Installing winnex-madhava==1.9.5 from PyPI...", flush=True)
+print("\n[1] Installing winnex-madhava==1.9.6 from PyPI...", flush=True)
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
-                       "--no-cache-dir", "winnex-madhava==1.9.5"])
+                       "--no-cache-dir", "winnex-madhava==1.9.6"])
 import winnex_madhava as wm
 print(f"    winnex-madhava {wm.__version__} installed from PyPI", flush=True)
-assert wm.__version__ == "1.9.5", "expected 1.9.5, got " + wm.__version__
+assert wm.__version__ == "1.9.6", "expected 1.9.6, got " + wm.__version__
 assert hasattr(wm.MadhavaL2, "search_with_commitment"), \
-    "1.9.5 must expose search_with_commitment"
+    "1.9.6 must expose search_with_commitment"
 
 
 def find_file(name):
