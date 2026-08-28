@@ -1,0 +1,17 @@
+{
+  "id": "kleniopadilha/winnex-madhava-1-9-8-scale-honest",
+  "id_no": 0,
+  "title": "winnex madhava 1 9 8 scale honest",
+  "code_file": "winnex-madhava-1-9-8-scale-honest.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "model_strategy": "none",
+  "competition_sources": [],
+  "dataset_sources": [
+    "shurangwu/bigann-100m"
+  ],
+  "kernel_sources": []
+}
