@@ -44,7 +44,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Build wheel for ${{ matrix.abi }}
-        uses: pypa/cibuildwheel@v2.17
+        # cibuildwheel 2.17.0 falha no GitHub runner (code 127: tenta
+        # /opt/python/cp38-cp38/bin/python que não existe na imagem default).
+        # 2.23.x corrige o bug e é a versão atual. (Validade do código: os 3
+        # wheels cp310/311/312 buildam no container manylinux2014 local.)
+        uses: pypa/cibuildwheel@v2.23.4
         with:
           output-dir: wheelhouse
         env:
