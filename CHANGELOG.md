@@ -5,6 +5,42 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.5] — 2026-08-28
+
+### Changed: PCA basis build (G1 fix) — matrix-free power iteration
+
+The `pca_corpus` basis build at high dimension (d≥384) was the documented
+G1 bottleneck (~20-25s at d=1536). Rewritten without changing the bound:
+
+- **Matrix-free power iteration**: the empirical covariance `C = (1/sample)·Σ a·aᵀ`
+  is no longer materialized (D×D, O(D²) memory AND O(sample·D²) bandwidth).
+  `C·v` is computed as `Aᵀ(A·v)/sample` — two O(sample·D) matvecs, ~1600× fewer
+  operations at d=1536, sample=10k. The deflation `C ← C − λ·v·vᵀ` becomes
+  implicit via MGS against all previously found directions (equivalent to
+  working in the deflated subspace).
+- **Cache-friendly matvec**: a transposed copy `AT` (D×sample) makes the
+  second matvec row-major, avoiding the stride-D cache-hostile gather
+  (measured 76s vs 0.24s for the same matvec).
+- **Contiguous subsample**: the PCA subsample read switched from a random
+  gather `base_f32[rng()%n]` (cache-hostile over the 61MB corpus) to a
+  sequential read of the first `sample` rows. i.i.d. for arbitrarily-ordered
+  embeddings; the seed still seeds the power-iteration start, so determinism
+  is preserved for a fixed corpus.
+- **Iteration cap 200 → 30**: the power iteration converges in ~10-30 steps
+  for the dominant directions (subspace similarity = 1.0000 to the 200-step
+  result, measured); the remaining iterations only refine the individual
+  eigenvector without changing the bound `e(v)=sqrt(1−‖Pv‖²)`.
+- **Serial matvec (no OpenMP)**: a parallel matvec with the environment's
+  OMP_NUM_THREADS causes memory-bandwidth oversubscription (measured 22s at
+  OMP_NUM_THREADS=28 vs 0.57s serial for the same work). The serial matvec is
+  already fast in the O(sample·D) matrix-free form.
+
+**Validity preserved**: the bound `UB(v,q)=⟨Pv,Pq⟩+e(v)e(q)` uses the same
+orthonormal basis in the ORIGINAL D-dimensional space. Verified: recall@10=
+1.000 and 0 bound violations across d=64/128/384/1536 × basis
+random/pca_corpus; deterministic basis across runs; dominant subspace
+aligned (cos=1.0) to the true eigendecomposition.
+
 ## [1.9.4] — 2026-08-26
 
 ### Added: multi-Python wheels (cp310, cp311, cp312) + sdist
