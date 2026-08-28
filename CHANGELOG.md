@@ -5,6 +5,16 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.8] — 2026-08-28
+
+### Changed: README updated with the real 1.9.6 Kaggle benchmark results
+
+Docs-only release. The PyPI README now reflects the actual public benchmark
+numbers (not local estimates): the PCA build-time table shows the real Kaggle
+measurements for 1.9.2 / 1.9.5 / 1.9.6 (BIGANN d=128 pca 0.5 s → 11.4 s
+regression → 0.3 s corrected; arXiv d=1536 4.4 s), the pca_sample trade-off
+(10k → 3k), and the link to `winnex-madhava-1-9-6-honest`. No engine change.
+
 ## [1.9.7] — 2026-08-28
 
 ### Changed: PCA power-iteration cap is a CONFIG parameter (engine stays agnostic)
