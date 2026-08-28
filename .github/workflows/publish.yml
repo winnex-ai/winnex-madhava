@@ -27,22 +27,33 @@ jobs:
   build-wheels:
     strategy:
       matrix:
-        python-version: ['3.10', '3.11', '3.12']
+        include:
+          - python-version: '3.10'
+            abi: cp310
+          - python-version: '3.11'
+            abi: cp311
+          - python-version: '3.12'
+            abi: cp312
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build wheel for cp${{ matrix.python-version }}
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build wheel for ${{ matrix.abi }}
         uses: pypa/cibuildwheel@v2.17
         with:
           output-dir: wheelhouse
         env:
-          CIBW_BUILD: cp${{ matrix.python-version }}-manylinux_x86_64
+          CIBW_BUILD: ${{ matrix.abi }}-manylinux_x86_64
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-cp${{ matrix.python-version }}
+          name: wheels-${{ matrix.abi }}
           path: wheelhouse/*.whl
 
   build-sdist:
