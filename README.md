@@ -522,6 +522,7 @@ the decision is made, using the exact global threshold of that instant.
 - Kaggle benchmark (1.9.1 honest): <https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-9-1-honest>
 - Kaggle benchmark (1.9.2 honest, AuditCommitment): <https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-9-2-honest>
 - Kaggle benchmark (1.9.5 honest, PCA-build G1): <https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-9-5-honest>
+- Kaggle benchmark (1.9.6 honest, PCA-build G1 corrected): <https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-9-6-honest>
 
 ### `winnex_madhava.benchmark_vs_groundtruth(engine, queries, gt_ids, *, query_alignment=1, k=None) -> dict`
 
@@ -644,28 +645,31 @@ corpus is outside the top-10, at full recall (1.000). The kernel installs
 `winnex-madhava` from PyPI, reads the raw public datasets, and measures only
 what the motor returns (no numpy ground-truth, no re-ordering).
 
-### PCA build time (1.9.5/1.9.6 — honest benchmark on the Kaggle runtime)
+### PCA build time (1.9.2 → 1.9.6 — honest benchmark on the Kaggle runtime)
 
 The `pca_corpus` basis build at d=1536 was suspected to be the high-dim
 bottleneck (~20-25 s measured locally with a high `OMP_NUM_THREADS`). The
-public benchmark `winnex-madhava-1-9-5-honest` (installs the package from
-PyPI, measures build time on the Kaggle runtime) showed the real picture:
+public benchmarks `winnex-madhava-1-9-5-honest` and `winnex-madhava-1-9-6-honest`
+(install the package from PyPI, measure build time on the Kaggle runtime)
+showed the real picture:
 
 | Dataset | dim | basis | build 1.9.2 | build 1.9.5 | build 1.9.6 | recall@10 | bound viol. |
 |---|---|---|---|---|---|---|---|
-| GloVe (20k) | 100 | pca_corpus | 0.2 s | 0.2 s | ~0.2 s | 1.000 | 0 |
-| BIGANN (20k) | 128 | pca_corpus | 0.5 s | **11.4 s** ⚠️ | **~0.05 s** | 1.000 | 0 |
-| arXiv OpenAI (20k) | 1536 | pca_corpus | 4.0 s | 4.1 s | ~1.7 s | 1.000 | 0 |
-| arXiv OpenAI (20k) | 1536 | random | 1.9 s | 1.9 s | 1.9 s | 0.996 | 0 |
+| GloVe (20k) | 100 | pca_corpus | 0.2 s | 0.2 s | 0.2 s | 1.000 | 0 |
+| BIGANN (20k) | 128 | pca_corpus | 0.5 s | **11.4 s** ⚠️ | **0.3 s** | 1.000 | 0 |
+| arXiv OpenAI (20k) | 1536 | pca_corpus | 4.0 s | 4.1 s | 4.4 s | 1.000 | 0 |
+| arXiv OpenAI (20k) | 1536 | random | 1.9 s | 1.9 s | 2.0 s | 0.996 | 0 |
 
 **Honest reading.** The ~20-25 s "G1 bottleneck" was an artifact of a high
 `OMP_NUM_THREADS` environment, not the engine — on the Kaggle runtime the
 1.9.2 pca build was already 0.2-4.0 s. The 1.9.5 matrix-free experiment
 (`C·v = Aᵀ(A·v)/sample`) **regressed low/mid dim**: BIGANN d=128 went 0.5 s
 → 11.4 s, because `O(2·sample·D·s·iters) ≫ O(D²·sample)` when
-`sample=10k > D`. **1.9.6 reverts to the direct covariance** and keeps the
-two safe wins — the contiguous subsample read and the power-iteration cap
-(200 → 30) — giving d=1536 ~1.7 s (down from 4.0 s) and d=128 ~0.05 s.
+`sample=10k > D`. **1.9.6 reverts to the direct covariance** (BIGANN back to
+0.3 s) and keeps the safe wins — the contiguous subsample read and the
+power-iteration cap exposed as the caller-owned `pca_iterations` knob
+(1.9.7). The pca_sample reduction (10k → 3k) shows a bounded trade-off:
+build 4.4 s → 4.2 s, bound coverage 61.2% → 57.3%, recall unchanged at 1.0.
 
 **Validity unchanged.** The basis is still an orthonormal set in the ORIGINAL
 D-dimensional space, so `UB(v,q)=⟨Pv,Pq⟩+e(v)e(q)` remains sound. Verified:
