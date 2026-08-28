@@ -397,8 +397,9 @@ std::vector<std::vector<int>> read_bigann_groundtruth(const std::string& path, i
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return gt;
     int nq = 0, dim = 0;
-    fread(&nq, 4, 1, f);
-    fread(&dim, 4, 1, f);
+    if (fread(&nq, 4, 1, f) != 1 || fread(&dim, 4, 1, f) != 1) {
+        fclose(f); return gt;
+    }
     int want = n_queries > 0 ? std::min(n_queries, nq) : nq;
     gt.resize(want);
     std::vector<int> ids(dim);
@@ -1201,10 +1202,10 @@ bool MadhavaL2::load_index(const std::string& path) {
         fclose(f); return false;
     }
     int n = 0, s1 = 0, s2 = 0, D = 0;
-    fread(&D, sizeof(int), 1, f);
-    fread(&n, sizeof(int), 1, f);
-    fread(&s1, sizeof(int), 1, f);
-    fread(&s2, sizeof(int), 1, f);
+    if (fread(&D, sizeof(int), 1, f) != 1 || fread(&n, sizeof(int), 1, f) != 1 ||
+        fread(&s1, sizeof(int), 1, f) != 1 || fread(&s2, sizeof(int), 1, f) != 1) {
+        fclose(f); return false;
+    }
     if (n <= 0 || s1 <= 0 || D <= 0 || s1 > 4096 || s2 > 4096) {
         fclose(f); return false;
     }
