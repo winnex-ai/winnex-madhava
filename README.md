@@ -520,6 +520,8 @@ the decision is made, using the exact global threshold of that instant.
 - Audit Module Zenodo record (archived, spec): <https://doi.org/10.5281/zenodo.22025292>
 - Madhava Witness Architecture record: <https://doi.org/10.5281/zenodo.22025293>
 - Kaggle benchmark (1.9.1 honest): <https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-9-1-honest>
+- Kaggle benchmark (1.9.2 honest, AuditCommitment): <https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-9-2-honest>
+- Kaggle benchmark (1.9.5 honest, PCA-build G1): <https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-9-5-honest>
 
 ### `winnex_madhava.benchmark_vs_groundtruth(engine, queries, gt_ids, *, query_alignment=1, k=None) -> dict`
 
@@ -641,6 +643,30 @@ PCA-aligned basis tightens e(v) to 0.79 and the bound **proves** 80.5% of the
 corpus is outside the top-10, at full recall (1.000). The kernel installs
 `winnex-madhava` from PyPI, reads the raw public datasets, and measures only
 what the motor returns (no numpy ground-truth, no re-ordering).
+
+### PCA build time (1.9.5 — G1 fix)
+
+The `pca_corpus` basis build was the documented high-dim bottleneck: at
+d = 1536 the materialized covariance (`C = AᵀA`, O(D²) memory + bandwidth)
+cost ~20-25 s. **1.9.5 rewrites it matrix-free** (`C·v = Aᵀ(A·v)/sample`,
+two O(sample·D) matvecs), with a transposed cache-friendly access pattern, a
+contiguous subsample read, and a power-iteration cap (30 steps instead of
+200) — the dominant subspace converges in ~10-30 steps (subspace similarity
+1.0000 to the 200-step result, measured).
+
+| Dataset | dim | basis | build (1.9.4) | build (1.9.5) | recall@10 | bound viol. |
+|---|---|---|---|---|---|---|
+| arXiv OpenAI (5k) | 1536 | pca_corpus | ~20-25 s | **~0.4-0.9 s** | 1.000 | 0 |
+| arXiv OpenAI (5k) | 1536 | random | ~0.1 s | ~0.1 s | 1.000 | 0 |
+| GloVe (20k) | 100 | pca_corpus | ~0.1 s | ~0.1 s | 1.000 | 0 |
+
+**Validity unchanged.** The basis is still an orthonormal set in the ORIGINAL
+D-dimensional space, so `UB(v,q)=⟨Pv,Pq⟩+e(v)e(q)` remains sound. Verified:
+recall@10 = 1.000 and 0 bound violations across d = 64/128/384/1536 × basis
+random/pca_corpus; deterministic basis across runs; dominant subspace aligned
+(cos = 1.0) to the true eigendecomposition. The full honest benchmark
+(`winnex-madhava-1-9-5-honest`, installs 1.9.5 from PyPI) measures build time
+for both bases on the public Kaggle runtime.
 
 ## Benchmarks
 
