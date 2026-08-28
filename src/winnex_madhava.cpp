@@ -208,10 +208,12 @@ inline void quantize(const float* src, int8_t* dst, const float* scale, int dims
 // geometry). For embeddings (Qwen/BERT/DeepSeek, d~1536) the caller MUST use
 // the float32 path so the PCA basis aligns with the real data manifold.
 bool build_pca_basis(const float* base_f32, int n, int D, int s, int seed,
-                     int sample_cap, bool normalize, float* P /* s×D row-major */) {
+                     int sample_cap, bool normalize, int iterations,
+                     float* P /* s×D row-major */) {
     if (s <= 0 || s > D) return false;
     int sample = std::min(n, sample_cap);
     if (sample < 1) return false;
+    if (iterations < 1) iterations = 1;
 
     // 1. Load a subsample of the corpus, optionally L2-normalized.
     //    Subsample read: the original code gathered base_f32[rng()%n] — a random
@@ -276,7 +278,7 @@ bool build_pca_basis(const float* base_f32, int n, int D, int s, int seed,
         for (float& x : v) x /= n0;
 
         double lambda = 0.0;
-        for (int it = 0; it < 30; ++it) {
+        for (int it = 0; it < iterations; ++it) {
             // w = C·v
             std::vector<float> work(D, 0.0f);
             for (int i = 0; i < D; ++i) {
@@ -527,7 +529,8 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
     bool pca_ok1 = false;
     if (cfg_.basis == BasisMode::PCACorpus) {
         pca_ok1 = build_pca_basis(corpus_f32_, n, D, s1, cfg_.seed + s1,
-                                  cfg_.pca_sample, cfg_.normalize_input, P1_);
+                                  cfg_.pca_sample, cfg_.normalize_input,
+                                  cfg_.pca_iterations, P1_);
     }
     if (!pca_ok1) {
         std::mt19937 rng(cfg_.seed + s1);
@@ -551,7 +554,8 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
         bool pca_ok2 = false;
         if (cfg_.basis == BasisMode::PCACorpus) {
             pca_ok2 = build_pca_basis(corpus_f32_, n, D, s2, cfg_.seed + s2,
-                                      cfg_.pca_sample, cfg_.normalize_input, P2_);
+                                      cfg_.pca_sample, cfg_.normalize_input,
+                                      cfg_.pca_iterations, P2_);
         }
         if (!pca_ok2) {
             std::mt19937 rng2(cfg_.seed + s2);

@@ -49,6 +49,7 @@ PYBIND11_MODULE(_winnex_madhava, m) {
         .def_readwrite("quant", &Config::quant)
         .def_readwrite("basis", &Config::basis)
         .def_readwrite("pca_sample", &Config::pca_sample)
+        .def_readwrite("pca_iterations", &Config::pca_iterations)
         .def_readwrite("stage1_dim", &Config::stage1_dim)
         .def_readwrite("stage2_dim", &Config::stage2_dim)
         .def_readwrite("k", &Config::k)

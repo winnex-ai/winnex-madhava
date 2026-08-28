@@ -82,7 +82,7 @@ recall_at_k = _native.recall_at_k
 ndcg_at_k = _native.ndcg_at_k
 read_bigann_groundtruth = _native.read_bigann_groundtruth
 
-__version__ = "1.9.6"
+__version__ = "1.9.7"
 __all__ = [
     "Config",
     "SearchResult",
@@ -110,6 +110,10 @@ def build_engine(
     quant: str = "int8",
     basis: str = "random",  # "random" (default) or "pca_corpus" (UB Width)
     pca_sample: int = 10000,
+    # Power-iteration cap for the PCA eigen-solver (convergence knob; the
+    # engine is agnostic — the caller owns the value). Default 200 = the
+    # historical value. 30 converges the dominant subspace at lower cost.
+    pca_iterations: int = 200,
     stage1_dim: int = 64,
     stage2_dim: int = 128,
     k: int = 10,
@@ -166,6 +170,10 @@ def build_engine(
         the random basis degenerates to exhaustive search.
     pca_sample : int, default 10000
         Max vectors used to estimate the PCA basis (UB Width mode).
+    pca_iterations : int, default 200
+        Power-iteration cap for the PCA eigen-solver (convergence knob, owned
+        by the caller — the engine is agnostic). 200 = historical; 30
+        converges the dominant subspace at a fraction of the cost.
     stage1_dim : int, default 64
         Stage-1 QR projection (wide bound B1).
     stage2_dim : int, default 128
@@ -231,6 +239,7 @@ def build_engine(
     # keeps the historical QR-MGS behavior.
     cfg.basis = BasisMode.PCA_CORPUS if basis.lower() == "pca_corpus" else BasisMode.RANDOM
     cfg.pca_sample = int(pca_sample)
+    cfg.pca_iterations = int(pca_iterations)
     cfg.stage1_dim = int(stage1_dim)
     cfg.stage2_dim = int(stage2_dim)
     cfg.k = int(k)

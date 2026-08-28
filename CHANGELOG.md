@@ -5,6 +5,26 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.7] — 2026-08-28
+
+### Changed: PCA power-iteration cap is a CONFIG parameter (engine stays agnostic)
+
+The motor must remain agnostic — no tuning constants hardcoded. The
+`pca_iterations` cap (previously a literal `30` inside `build_pca_basis`) is
+now a first-class `Config` field, exposed on `build_engine()`:
+
+- `pca_iterations: int = 200` — the historical value (backwards-compatible
+  default: same basis as before the 1.9.5 tuning).
+- The caller owns the knob: 30 converges the dominant subspace at lower cost
+  (subspace similarity = 1.0000 to 200 steps, measured) — but that is a
+  caller decision, not an engine constant.
+- Plumbed through `Config` → `build_pca_basis(... iterations ...)` → the
+  `_winnex_madhava` binding → `build_engine(pca_iterations=...)`.
+
+The contiguous subsample and the direct-covariance revert from 1.9.6 are
+unchanged. Verified: recall@10 = 1.000, 0 bound violations, deterministic
+basis, `-Werror` clean, 34/34 Python + 1/1 C++ tests pass.
+
 ## [1.9.6] — 2026-08-28
 
 ### Changed: PCA basis build (G1) — contiguous subsample + iter cap; revert matrix-free

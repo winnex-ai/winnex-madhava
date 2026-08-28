@@ -77,6 +77,12 @@ struct Config {
 
     // UB Width mode (BasisMode::PCACorpus): sample size for the covariance.
     int pca_sample = 10000;   // max vectors used to estimate the PCA basis
+    // Power-iteration cap for the PCA eigen-solver. The motor is AGNOSTIC:
+    // this is a convergence knob owned by the caller (the engine keeps it a
+    // config parameter, not a hardcoded constant). 200 = the historical
+    // value; 30 converges the dominant subspace (subspace sim = 1.0000 to
+    // 200 steps) at a fraction of the cost.
+    int pca_iterations = 200;
 
     // Metric & quantization (stack parametrizable)
     Metric metric = Metric::Cosine;   // stack default: cosine over normalized embeddings
