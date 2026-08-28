@@ -83,6 +83,9 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
+          # v4 baixa cada artifact numa subpasta (dist/<nome>/); sem merge, o
+          # gh-action-pypi-publish não encontra os wheels na raiz de dist/.
+          merge-multiple: true
 
       - name: Publish to PyPI (Trusted Publisher / OIDC)
         uses: pypa/gh-action-pypi-publish@release/v1
