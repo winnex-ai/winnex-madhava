@@ -82,7 +82,7 @@ recall_at_k = _native.recall_at_k
 ndcg_at_k = _native.ndcg_at_k
 read_bigann_groundtruth = _native.read_bigann_groundtruth
 
-__version__ = "1.9.8"
+__version__ = "1.9.9"
 __all__ = [
     "Config",
     "SearchResult",
@@ -233,7 +233,18 @@ def build_engine(
     cfg.dim = int(dim)
     is_cosine = metric.lower() == "cosine"
     cfg.metric = Metric.COSINE if is_cosine else Metric.L2
-    cfg.quant = QuantMode.INT8 if quant.lower() == "int8" else QuantMode.NONE
+    # BUG FIX (2026-08-31): a FLOAT32 corpus MUST use the float32 path
+    # (build_float32). With quant="int8" (the historical default) the C++
+    # build allocates ONLY the int8 projection buffers (pr1_/pr2_), not the
+    # float32 ones (pr1_f_/pr2_f_). The UB Width path (basis="pca_corpus",
+    # want_pca_lapack) calls set_basis(), which recomputes projections into
+    # pr1_f_/pr2_f_ unconditionally — writing to null pointers → SEGFAULT.
+    # Converting float32 to uint8 also destroys the embedding manifold
+    # (Bug B: e(v)→1.0). So float32 corpora force quant="none"; callers that
+    # explicitly want int8 quantization must pass a uint8 corpus (the native
+    # L2 path).
+    cfg.quant = QuantMode.NONE if is_float_corpus else (
+        QuantMode.INT8 if quant.lower() == "int8" else QuantMode.NONE)
     # UB Width mode: basis="pca_corpus" aligns the projection to the corpus'
     # principal directions (tight bound at high dimension); "random" (default)
     # keeps the historical QR-MGS behavior.

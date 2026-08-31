@@ -5,6 +5,24 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.9] — 2026-08-31
+
+### Fixed: SEGFAULT in `build_engine(float32, basis='pca_corpus', quant='int8')`
+
+The UB Width path (float32 corpus + `basis="pca_corpus"`) calls `set_basis()`
+to supply the LAPACK PCA basis. `set_basis()` recomputes the per-vector
+projections into the float32 buffers `pr1_f_`/`pr2_f_` **unconditionally**,
+but those buffers are allocated only when `quant == QuantMode::None`. With
+the historical default `quant="int8"`, the buffers are null → write to null
+pointer → **segfault** (reproduced: `build_engine(float32, pca_corpus)` with
+the default quant dumps core).
+
+**Fix (Python binding):** a float32 corpus now forces `quant="none"` in
+`build_engine`. This is also mathematically correct — converting float32
+embeddings to uint8 destroys the embedding manifold (Bug B: e(v)→1.0). Callers
+that explicitly want int8 quantization must pass a uint8 corpus (the native L2
+path). Verified: the segfault path no longer reaches the C++ null-write.
+
 ## [1.9.8] — 2026-08-28
 
 ### Changed: README updated with the real 1.9.6 Kaggle benchmark results
