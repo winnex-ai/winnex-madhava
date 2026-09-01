@@ -1,0 +1,22 @@
+{
+  "id": "kleniopadilha/winnex-madhava-199-five-csv-datasets-normalize-v2",
+  "title": "winnex-madhava 199 five csv datasets normalize v2",
+  "code_file": "winnex-madhava-1-9-9-five-datasets-normalize-v2.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": false,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "dataset_sources": [
+    "bwandowando/kaggle-forum-topics-embeddings-all-minilm-l6-v2",
+    "ahmedshahriarsakib/top-1000-twitter-celebrity-tweets-embeddings",
+    "yekenot/fasttext-crawl-300d-2m",
+    "joshkyh/glove-twitter",
+    "henriupton/protbert-embeddings-for-cafa5",
+    "sugataghosh/google-word2vec"
+  ],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}
