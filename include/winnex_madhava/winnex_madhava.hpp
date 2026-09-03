@@ -116,6 +116,26 @@ struct Config {
     // motor's exact decision, not a recomputing judge. Default false so the
     // normal search path costs nothing extra.
     bool audit_record = false;
+
+    // EXHAUSTIVE AUDIT MODE (2026-09-03): when true, search() FORCES the
+    // post-filter pool to cover the ENTIRE corpus (k1 = k2 = N) and disables
+    // early_exit, so the exact re-score is GLOBAL — the returned top-K IS the
+    // exact top-K of the whole corpus, and SearchResult.recall_guarantee is
+    // always "exact_global".
+    //
+    // WHY: the default `k1_fraction` prefilter cuts candidates WITHOUT a proof
+    // (pruned_by_prefilter). When the embedding manifold is weak (e.g. a
+    // degraded corpus), the pool may not contain the true global top-K, and
+    // search() can return a pool-top-K that differs from the exact top-K while
+    // still reporting bound_violations == 0 (the guarantee is per-document
+    // bound-correctness WITHIN the pool, not global recall).
+    //
+    // audit_exhaustive=true is the price of a GLOBAL guarantee: O(N·d) per
+    // query (no recall pruning). Compliance/WORM consumers (tracer-gov /
+    // tracer-med) that sign a certificate should use this mode so the
+    // certificate covers the whole corpus. Default false (historical behavior,
+    // no perf change).
+    bool audit_exhaustive = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -167,6 +187,26 @@ struct SearchResult {
     // Per-id residual_norm = e(v)·e(q) that the motor used in the UB at
     // decision time (so the certificate can report it without recomputing).
     std::vector<float> audit_residuals;
+
+    // RECALL GUARANTEE (2026-09-03): a FACTUAL statement of whether the
+    // returned top-K is the exact top-K of the ENTIRE corpus or only the best
+    // within the post-filter pool.
+    //
+    //   "exact_global" — the post-filter scored all N vectors (k3 == N, which
+    //                    is guaranteed by Config::audit_exhaustive or a
+    //                    k1_fraction high enough that k1 == N). The returned
+    //                    top-K IS the global exact top-K.
+    //   "pool_only"    — the post-filter scored only the k1/k2 survivors
+    //                    (k3 < N). The returned top-K is the best WITHIN the
+    //                    pool; docs cut by the prefilter (pruned_by_prefilter)
+    //                    were discarded WITHOUT a per-vector proof, so the
+    //                    global top-K is NOT guaranteed.
+    //
+    // This is derived from observed state (k3 vs N), NOT a promise: when the
+    // bound is loose the motor cannot prove whether a doc outside the pool
+    // belongs in the global top-K, so "pool_only" is the honest answer.
+    // bound_violations == 0 does NOT imply "exact_global".
+    std::string recall_guarantee = "pool_only";  // "pool_only" | "exact_global"
 };
 
 // ---------------------------------------------------------------------------
@@ -237,6 +277,12 @@ struct AuditCommitment {
     long long bound_pairs = 0;
     long long bound_violations = 0;     // always 0
     double latency_ms = 0.0;
+    // RECALL SCOPE (2026-09-03): "exact_global" when the commitment's top-K and
+    // global_threshold cover the ENTIRE corpus (the underlying search() ran the
+    // exact post-filter over all N), else "pool_only". A compliance layer MUST
+    // NOT sign a "pool_only" commitment as if it proved the global top-K — the
+    // certificate only proves exclusion from the top-K of the pool.
+    std::string recall_guarantee = "pool_only";  // "pool_only" | "exact_global"
 };
 
 // ---------------------------------------------------------------------------

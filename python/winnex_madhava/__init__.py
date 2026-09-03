@@ -82,7 +82,7 @@ recall_at_k = _native.recall_at_k
 ndcg_at_k = _native.ndcg_at_k
 read_bigann_groundtruth = _native.read_bigann_groundtruth
 
-__version__ = "1.9.9"
+__version__ = "1.9.10"
 __all__ = [
     "Config",
     "SearchResult",
@@ -124,6 +124,12 @@ def build_engine(
     postfilter: bool = True,
     normalize_input: bool = True,
     early_exit: bool | None = None,  # None = auto (True for cosine, False for l2)
+    # Exhaustive audit (2026-09-03): forces the post-filter pool to cover the
+    # ENTIRE corpus (k1=k2=N) and disables early_exit, so the returned top-K IS
+    # the exact global top-K and SearchResult.recall_guarantee == "exact_global".
+    # Cost: O(N·d) per query (no recall pruning). For audit/compliance/WORM
+    # consumers that sign a certificate. Default False = historical behavior.
+    audit_exhaustive: bool = False,
     seed: int = 42,
     # Hybrid (MadHybrid) mode — same engine, clustered for sublinear query
     hybrid: bool = False,
@@ -268,6 +274,9 @@ def build_engine(
     cfg.early_exit = bool(early_exit) if early_exit is not None else False
     cfg.k2_max = int(k2_max)
     cfg.seed = int(seed)
+    # Exhaustive audit (2026-09-03): the C++ search() forces k1=k2=N and
+    # disables early_exit when this is set, so recall_guarantee == "exact_global".
+    cfg.audit_exhaustive = bool(audit_exhaustive)
 
     if hybrid:
         # Same engine, run per cluster (MadHybrid). The corpus may be

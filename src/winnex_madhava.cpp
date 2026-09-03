@@ -828,9 +828,19 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
         float score = is_l2 ? (vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub) : -ub;
         b1[i] = {score, i};
     }
-    int k1 = std::max(cfg_.k1_min, (int)(N * cfg_.k1_fraction));
-    if (k1 > N) k1 = N;
-    if (k1 < N) std::nth_element(b1.begin(), b1.begin() + k1, b1.end());
+    // EXHAUSTIVE AUDIT (2026-09-03): audit_exhaustive forces the pool to cover
+    // the ENTIRE corpus so the exact post-filter is global. We keep the b1
+    // bound-sort (harmless) but skip the nth_element cut so every doc reaches
+    // the exact re-score below. With k1 = N the pool is the whole corpus and
+    // recall_guarantee below is "exact_global".
+    int k1;
+    if (cfg_.audit_exhaustive) {
+        k1 = N;
+    } else {
+        k1 = std::max(cfg_.k1_min, (int)(N * cfg_.k1_fraction));
+        if (k1 > N) k1 = N;
+        if (k1 < N) std::nth_element(b1.begin(), b1.begin() + k1, b1.end());
+    }
     out.k1 = k1;
 
     // Stage-2 (optional): tighter bound on the k1 survivors.
@@ -854,11 +864,18 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
             float score2 = is_l2 ? (vn_eff_[vi] * vn_eff_[vi] + qn2 - 2.0f * ub2) : -ub2;
             b2[i] = {score2, vi};
         }
-        int k2t = std::max(cfg_.k2_min, (int)(N * cfg_.k2_fraction));
-        if (k2t > k1) k2t = k1;
-        // Cap Stage-2 survivors (streaming/100M: limit post-filter cost).
-        if (k2t > cfg_.k2_max) k2t = cfg_.k2_max;
-        std::nth_element(b2.begin(), b2.begin() + k2t, b2.end());
+        // EXHAUSTIVE AUDIT: skip the k2 cut so every doc reaches the exact
+        // post-filter (the global guarantee needs k2 = N, not the k2_max cap).
+        int k2t;
+        if (cfg_.audit_exhaustive) {
+            k2t = N;
+        } else {
+            k2t = std::max(cfg_.k2_min, (int)(N * cfg_.k2_fraction));
+            if (k2t > k1) k2t = k1;
+            // Cap Stage-2 survivors (streaming/100M: limit post-filter cost).
+            if (k2t > cfg_.k2_max) k2t = cfg_.k2_max;
+        }
+        if (k2t < k2) std::nth_element(b2.begin(), b2.begin() + k2t, b2.end());
         k2 = k2t;
         survivors = &b2;
     }
@@ -922,7 +939,14 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     //   cosine: stop when -UB_next <= worst_exact (ub_next >= -worst? no: -UB_next <= worst
     //           means UB_next >= -worst, and exact cos <= UB_next — not a valid stop!)
     // CORRECT cosine stop: UB_next <= worst_exact, i.e. -ranked[i+1].first <= worst_exact.
-    if (cfg_.postfilter) {
+    // EXHAUSTIVE AUDIT: the exact post-filter must cover the WHOLE corpus and
+    // run to completion. We force the effective flags locally (cfg_ is const):
+    //   - postfilter must be ON (the global top-K is decided by exact re-score),
+    //   - early_exit must be OFF (it could stop before scoring all N, leaving
+    //     k3 < N and thus recall_guarantee != "exact_global").
+    const bool pf_eff = cfg_.postfilter || cfg_.audit_exhaustive;
+    const bool ee_eff = cfg_.early_exit && !cfg_.audit_exhaustive;
+    if (pf_eff) {
         // Sort ALL survivors by bound score ascending (best-first). The early-exit
         // walks the list in bound order, so the whole list must be sorted — a
         // partial_sort would leave the tail unordered and break the pruning bound.
@@ -945,7 +969,7 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
                                [&](auto& a, auto& b) { return worse_than(a.first, b.first); });
             }
         };
-        if (cfg_.early_exit) {
+        if (ee_eff) {
             int i = 0;
             for (; i < k2; i++) {
                 int vi = ranked[i].second;
@@ -1000,7 +1024,7 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
         // (the honest pruned_by_bound + audit hook are computed AFTER the
         //  final top-K is known, using the GLOBAL K-th threshold — see below.)
 
-        if (cfg_.early_exit && (int)heap.size() == K) {
+        if (ee_eff && (int)heap.size() == K) {
             // early_exit: the heap holds the top-K by exact score in the
             // walk order — this IS the correct result.
             std::sort(heap.begin(), heap.end(),
@@ -1019,6 +1043,17 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
         std::partial_sort(ranked.begin(), ranked.begin() + std::min(K, k2), ranked.end());
         for (int i = 0; i < std::min(K, k2); i++) out.indices.push_back(ranked[i].second);
     }
+
+    // RECALL GUARANTEE (2026-09-03): derived from OBSERVED state, not a promise.
+    //   - With the exact post-filter ON and all N scored (k3 == N), the returned
+    //     top-K IS the exact global top-K → "exact_global".
+    //   - Otherwise the result is the best WITHIN the post-filter pool (docs cut
+    //     by k1_fraction/k2_max were discarded without a proof) → "pool_only".
+    //   - Without a post-filter (cfg_.postfilter=false) the ranking is by the
+    //     bound/modulated score, never the exact top-K → "pool_only".
+    // This makes the honest statement the README already makes ("bound_violations
+    // == 0 does not mean the returned top-K is the true top-K") machine-readable.
+    out.recall_guarantee = (pf_eff && out.k3 == N) ? "exact_global" : "pool_only";
 
     // HONEST PRUNING BREAKDOWN + AUDIT HOOK (computed against the GLOBAL
     // K-th threshold, not the post-filter pool threshold).
@@ -1255,6 +1290,9 @@ SearchResult MadhavaL2::search_exact(const float* query, const std::vector<float
     }
     out.bound_pairs = N;
     out.k3 = N;
+    // search_exact varre o corpus inteiro (k3 == N): o resultado É o top-K
+    // global exato. recall_guarantee é factual, derivado de k3 == N.
+    out.recall_guarantee = "exact_global";
     if (is_l2)
         std::partial_sort(scores.begin(), scores.begin() + std::min(K, N), scores.end());
     else
@@ -1482,6 +1520,11 @@ AuditCommitment MadhavaL2::search_with_commitment(const float* query, int64_t k,
     out.bound_pairs = base.bound_pairs;
     out.bound_violations = base.bound_violations;
     out.latency_ms = base.latency_ms;
+    // Recall scope of THIS commitment: derived from the underlying search().
+    // When the motor only re-scored the pool (k3 < N), the threshold and the
+    // sampled exclusions prove exclusion from the POOL top-K, not the global
+    // top-K — the WORM record must carry this so it is not over-read.
+    out.recall_guarantee = base.recall_guarantee;
 
     // The global K-th threshold: exact score of the K-th returned result.
     // (Mirrors the 1.9.1 witness fix — the certificate must use the TRUE

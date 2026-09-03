@@ -5,6 +5,51 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.10] — 2026-09-03
+
+### Added: `recall_guarantee` + `audit_exhaustive` — the honest statement of scope
+
+**Motivação (colapso silencioso da "garantia", encontrado no benchmark público
+`winnex-pipeline-honest-v199-corrigido`):** o `bound_violations == 0` do motor
+garante correção do bound POR DOCUMENTO dentro do pool pós-filtro (`k1`), NÃO
+que o top-K retornado é o top-K global do corpus. Num manifold fraco (ex. corpus
+degradado word2vec, 94.7% NaN pós-gate), o prefilter `k1_fraction` corta docs
+SEM prova (`pruned_by_prefilter`); se o pool não contém o top-K global,
+`search()` diverge de `search_exact()` do MESMO motor — medido: 32-50/50 queries
+— ainda com `viol=0`. O README já documentava a limitação; esta versão a torna
+**machine-readable** e oferece o modo que a elimina.
+
+**1. `SearchResult.recall_guarantee`** ∈ `"pool_only" | "exact_global"`:
+- `"exact_global"` quando o post-filter exato re-pontuou TODOS os N (`k3 == N`).
+- `"pool_only"` caso contrário (docs cortados por `k1_fraction`/`k2_max` foram
+  descartados sem prova; o resultado é o melhor DENTRO do pool).
+- Derivado de estado OBSERVADO (`k3` vs `N`), nunca uma promessa — quando o
+  bound é frouxo o motor não pode provar se um doc fora do pool pertence ao
+  top-K global, então `pool_only` é a resposta honesta.
+- `search_exact()` reporta sempre `"exact_global"` (varre N).
+- `search_with_commitment()` carrega o mesmo campo: a camada de compliance/WORM
+  NÃO deve assinar um commitment `pool_only` como se provasse o top-K global.
+
+**2. `build_engine(audit_exhaustive=True)`** (novo knob do Config):
+- Força `k1 = k2 = N` (pool = corpus inteiro) e desliga `early_exit`.
+- Garante `recall_guarantee == "exact_global"` e `search() == search_exact()`.
+- Custo: O(N·d) por query (sem pruning de recall) — é o PREÇO da garantia
+  global. Consumidores de auditoria/compliance (tracer-gov / tracer-med, WORM)
+  devem usar este modo ao assinar certificado.
+- Default `false` — comportamento histórico inalterado, zero impacto de perf.
+
+**3. Não mudou nada do caminho default.** O `k1_fraction` continua sendo o
+mecanismo de pruning por velocidade; a diferença é que agora o motor DIZ quando
+o resultado não é o top-K global, em vez de só `pruned_by_prefilter` (fácil de
+ignorar). Backwards-compatible.
+
+**Validação:** 6 novos testes (`test_recall_guarantee.py`): default `pool_only`
+com `viol=0` em manifold fraco; divergência default vs `search_exact` exposta;
+`audit_exhaustive` → `search()==search_exact()`, `k3==N`, `exact_global`;
+`search_exact` sempre `exact_global`; commitment carrega o escopo; sem
+regressão no manifold forte (22/22 testes anteriores + 6 novos passam; C++
+tests verdes).
+
 ## [1.9.9] — 2026-08-31
 
 ### Fixed: SEGFAULT in `build_engine(float32, basis='pca_corpus', quant='int8')`

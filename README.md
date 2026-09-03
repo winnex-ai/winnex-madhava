@@ -916,6 +916,37 @@ survivors may be a weak sample and recall drops — still with 0 violations.
 The bound is sound, but pruning quality depends on `stage1_dim`, `stage2_dim`
 and `k1_fraction`. Tune them on your data.
 
+**Scope is now machine-readable (1.9.10).** Every `SearchResult` carries
+`recall_guarantee`:
+
+- `"exact_global"` — the exact post-filter scored **all** N vectors
+  (`k3 == N`): the returned top-K **is** the exact global top-K.
+- `"pool_only"` — the post-filter scored only the `k1`/`k2` survivors
+  (`k3 < N`): the returned top-K is the best **within the pool**; docs cut by
+  the prefilter were discarded without a per-vector proof, so the global top-K
+  is **not** guaranteed.
+
+`search_exact()` always reports `"exact_global"`. `search_with_commitment()`
+carries the same field, so a compliance layer never signs a `pool_only`
+commitment as if it proved the global top-K.
+
+**For a global guarantee, use `audit_exhaustive=True`** (1.9.10):
+
+```python
+eng = wm.build_engine(X, metric="cosine", k=10,
+                      audit_exhaustive=True)   # k1 = k2 = N, no early_exit
+r = eng.search(q)
+assert r.recall_guarantee == "exact_global"    # r IS the exact global top-K
+```
+
+This forces the post-filter pool to cover the entire corpus (and disables
+`early_exit`), so `search() == search_exact()` by construction. Cost: O(N·d)
+per query — no recall pruning. Audit/compliance/WORM consumers
+(tracer-gov / tracer-med) that sign a certificate should use this mode.
+Default is `False` (historical behavior, no perf change): the pruning path
+remains the fast option, and now it honestly reports `pool_only` when it
+cannot prove the global top-K.
+
 ### Lower-dimensional / tiny corpora
 
 The Stage-1 QR projection shines on high-dimensional uint8 data (64–1000D).

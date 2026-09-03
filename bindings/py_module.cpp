@@ -62,7 +62,9 @@ PYBIND11_MODULE(_winnex_madhava, m) {
         .def_readwrite("postfilter", &Config::postfilter)
         .def_readwrite("normalize_input", &Config::normalize_input)
         .def_readwrite("early_exit", &Config::early_exit)
-        .def_readwrite("n_threads", &Config::n_threads);
+        .def_readwrite("n_threads", &Config::n_threads)
+        .def_readwrite("audit_record", &Config::audit_record)
+        .def_readwrite("audit_exhaustive", &Config::audit_exhaustive);
 
     py::class_<SearchResult>(m, "SearchResult")
         .def_readonly("indices", &SearchResult::indices)
@@ -80,7 +82,8 @@ PYBIND11_MODULE(_winnex_madhava, m) {
         .def_readonly("audit_ids", &SearchResult::audit_ids)
         .def_readonly("audit_ubs", &SearchResult::audit_ubs)
         .def_readonly("audit_l2_lbs", &SearchResult::audit_l2_lbs)
-        .def_readonly("audit_residuals", &SearchResult::audit_residuals);
+        .def_readonly("audit_residuals", &SearchResult::audit_residuals)
+        .def_readonly("recall_guarantee", &SearchResult::recall_guarantee);
 
     py::class_<MadhavaL2>(m, "MadhavaL2")
         .def(py::init<const Config&>())
@@ -205,6 +208,9 @@ PYBIND11_MODULE(_winnex_madhava, m) {
                  d["latency_ms"] = c.latency_ms;
                  d["total_excluded_count"] = c.total_excluded_count;
                  d["global_threshold"] = c.global_threshold;
+                 // Recall scope of THIS commitment (2026-09-03): "exact_global"
+                 // only when the underlying search() re-scored all N (k3 == N).
+                 d["recall_guarantee"] = c.recall_guarantee;
                  py::list samples;
                  for (const auto& s : c.sampled_records) {
                      py::dict sd;
