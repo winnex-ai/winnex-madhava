@@ -421,6 +421,33 @@ void MadhavaL2::set_basis(const float* P1, const float* P2) {
     // corpus (corpus_f32_ when available, else the uint8 base re-normalized).
     const bool normalize = (cfg_.metric == Metric::Cosine) && cfg_.normalize_input;
     std::vector<float> buf((size_t)1 * D);
+    // SCAN INT8: a basis change changes the projection magnitudes. The int8
+    // scale (calibrated on the OLD basis during build) may saturate/clip on the
+    // NEW basis — measured: pca_corpus + scan_int8 dropped recall to 0.85. So
+    // when scan_int8 is on, FIRST recalibrate the per-axis scale on the new
+    // basis (max |projection| over the corpus), THEN quantize.
+    bool recalib_scale = cfg_.scan_int8 && pr1_ != nullptr;
+    std::vector<float> ma1(recalib_scale ? s1 : 0, 0.0f);
+    std::vector<float> ma2(recalib_scale && s2 > 0 ? s2 : 0, 0.0f);
+    if (recalib_scale) {
+        // Pass 1: project all docs on the NEW basis, find per-axis max |.|.
+        for (int i = 0; i < n_; i++) {
+            const float* base_v;
+            if (corpus_f32_ != nullptr) base_v = corpus_f32_ + (size_t)i * D;
+            else { for (int j = 0; j < D; j++) buf[j] = (float)base_[(size_t)i * D + j]; base_v = buf.data(); }
+            for (int j = 0; j < s1; j++) {
+                float d = dot_f32(base_v, P1_ + (size_t)j * D, D);
+                if (std::fabs(d) > ma1[j]) ma1[j] = std::fabs(d);
+            }
+            if (s2 > 0) for (int j = 0; j < s2; j++) {
+                float d = dot_f32(base_v, P2_ + (size_t)j * D, D);
+                if (std::fabs(d) > ma2[j]) ma2[j] = std::fabs(d);
+            }
+        }
+        for (int j = 0; j < s1; j++) pr1_scale_[j] = std::max(ma1[j] / 127.0f * 1.05f, 1e-10f);
+        if (s2 > 0) for (int j = 0; j < s2; j++) pr2_scale_[j] = std::max(ma2[j] / 127.0f * 1.05f, 1e-10f);
+    }
+    // Pass 2: recompute projections + residuals, quantize int8 with the fresh scale.
     for (int i = 0; i < n_; i++) {
         const float* base_v;
         if (corpus_f32_ != nullptr) base_v = corpus_f32_ + (size_t)i * D;
@@ -430,20 +457,31 @@ void MadhavaL2::set_basis(const float* P1, const float* P2) {
         float vn2 = normalize ? 1.0f : nn;
         // recompute Stage-1 projection + residual
         float pn1 = 0.0f;
+        float pj1[256];
         for (int j = 0; j < s1; j++) {
             float d = dot_f32(base_v, P1_ + (size_t)j * D, D);
             pr1_f_[(size_t)i * s1 + j] = d;
+            pj1[j] = d;
             pn1 += d * d;
         }
         e1_[i] = std::sqrt(std::max(0.0f, vn2 - pn1));
+        // SCAN INT8: also refresh the int8 projections after a basis change.
+        if (cfg_.scan_int8 && pr1_ != nullptr && pr1_scale_ != nullptr) {
+            quantize(pj1, pr1_ + (size_t)i * s1, pr1_scale_, s1);
+        }
         if (s2 > 0) {
             float pn2 = 0.0f;
+            float pj2[256];
             for (int j = 0; j < s2; j++) {
                 float d = dot_f32(base_v, P2_ + (size_t)j * D, D);
                 pr2_f_[(size_t)i * s2 + j] = d;
+                pj2[j] = d;
                 pn2 += d * d;
             }
             e2_[i] = std::sqrt(std::max(0.0f, vn2 - pn2));
+            if (cfg_.scan_int8 && pr2_ != nullptr && pr2_scale_ != nullptr) {
+                quantize(pj2, pr2_ + (size_t)i * s2, pr2_scale_, s2);
+            }
         }
     }
 }
@@ -587,6 +625,13 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
         pr1_ = new int8_t[(size_t)n * s1];
     } else {
         pr1_f_ = new float[(size_t)n * s1];
+        // SCAN INT8 (2026-09-03): opt-in fast scan for float32 corpora. Keep
+        // pr1_f_ (needed for e(v)/exact) AND allocate the int8 pr1_ so ub_raw
+        // can scan with dot_int8_scaled (4× less DRAM traffic, ~2× faster at
+        // large N). pr1_scale_ was already allocated above.
+        if (cfg_.scan_int8) {
+            pr1_ = new int8_t[(size_t)n * s1];
+        }
     }
     if (s2 > 0) {
         e2_ = new float[n];
@@ -595,6 +640,9 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
             pr2_ = new int8_t[(size_t)n * s2];
         } else {
             pr2_f_ = new float[(size_t)n * s2];
+            if (cfg_.scan_int8) {
+                pr2_ = new int8_t[(size_t)n * s2];
+            }
         }
     }
 
@@ -673,6 +721,11 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
             for (int j = 0; j < s1; j++) { pj1[j] = dot_f32(v, P1_ + (size_t)j * D, D); pn1 += pj1[j] * pj1[j]; }
             if (cfg_.quant == QuantMode::None) {
                 for (int j = 0; j < s1; j++) pr1_f_[(size_t)id * s1 + j] = pj1[j];
+                // SCAN INT8: also quantize the projection so ub_raw can use the
+                // fast int8 scan. The scale was calibrated on a sample above.
+                if (cfg_.scan_int8 && pr1_ != nullptr) {
+                    quantize(pj1, pr1_ + (size_t)id * s1, pr1_scale_, s1);
+                }
             } else {
                 quantize(pj1, pr1_ + (size_t)id * s1, pr1_scale_, s1);
             }
@@ -687,6 +740,9 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
                 for (int j = 0; j < s2; j++) { pj2[j] = dot_f32(v, P2_ + (size_t)j * D, D); pn2 += pj2[j] * pj2[j]; }
                 if (cfg_.quant == QuantMode::None) {
                     for (int j = 0; j < s2; j++) pr2_f_[(size_t)id * s2 + j] = pj2[j];
+                    if (cfg_.scan_int8 && pr2_ != nullptr) {
+                        quantize(pj2, pr2_ + (size_t)id * s2, pr2_scale_, s2);
+                    }
                 } else {
                     quantize(pj2, pr2_ + (size_t)id * s2, pr2_scale_, s2);
                 }
@@ -712,6 +768,25 @@ float MadhavaL2::ub_raw(int idx, int layer, const float* pq, float qr, float qm)
         float e = (layer == 1) ? e1_[idx] : e2_[idx];
         return inner + e * qr + qm + 1e-5f;
     } else {
+        // SCAN INT8 (2026-09-03): when scan_int8 is on, the float32 path ALSO
+        // has the int8 projections (pr1_/pr2_ + pr1_scale_). Use them for the
+        // scan (dot_int8_scaled: 1B/doc/dim vs 4B) — ~2× faster at large N,
+        // validated safe (the int8 bound with the qm quant margin never excludes
+        // a doc the float32 bound keeps). pr1_f_ is retained for e(v)/exact.
+        if (pr1_ != nullptr && pr1_scale_ != nullptr) {
+            const int8_t* pri = (layer == 1) ? pr1_ + (size_t)idx * s : pr2_ + (size_t)idx * s;
+            const float* scale = (layer == 1) ? pr1_scale_ : pr2_scale_;
+            float inner = dot_int8_scaled(pri, scale, pq, s);
+            float e = (layer == 1) ? e1_[idx] : e2_[idx];
+            // The caller (search) passes qm (the int8 quant margin for the
+            // query) when quant==Int8; for the scan_int8 path on a float32
+            // corpus, search must also pass qm (it does — see the pq1/qm1
+            // computation which now includes the scan_int8 margin). Here we add
+            // the per-doc margin via the same qm the caller supplied + the
+            // float32 orthonormality margin. dot_int8_scaled already includes
+            // scale; qm (query side) + 1e-4 (numeric) cover the rest.
+            return inner + e * qr + qm + 1e-4f;
+        }
         const float* prf = (layer == 1) ? pr1_f_ + (size_t)idx * s : pr2_f_ + (size_t)idx * s;
         float inner = dot_f32(prf, pq, s);
         float e = (layer == 1) ? e1_[idx] : e2_[idx];
@@ -811,8 +886,13 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     float q1s = 0;
     for (int j = 0; j < s1; j++) { pq1[j] = dot_f32(qproj, P1_ + (size_t)j * D, D); q1s += pq1[j] * pq1[j]; }
     float qr1 = std::sqrt(std::max(0.0f, qn_eff * qn_eff - q1s));
+    // SCAN INT8: the quant margin qm is needed when ub_raw uses the int8
+    // projections — native Int8 quant OR the opt-in scan_int8 on a float32
+    // corpus (which keeps pr1_ int8 alongside pr1_f_).
+    const bool scan_uses_int8 = (cfg_.quant == QuantMode::Int8)
+        || (cfg_.scan_int8 && pr1_ != nullptr && pr1_scale_ != nullptr);
     float qm1 = 0;
-    if (cfg_.quant == QuantMode::Int8)
+    if (scan_uses_int8)
         for (int j = 0; j < s1; j++) qm1 += 0.5f * pr1_scale_[j] * std::fabs(pq1[j]);
     float qn2 = qn_eff * qn_eff;
 
@@ -853,7 +933,7 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
         for (int j = 0; j < s2; j++) { pq2[j] = dot_f32(qproj, P2_ + (size_t)j * D, D); q2s += pq2[j] * pq2[j]; }
         float qr2 = std::sqrt(std::max(0.0f, qn_eff * qn_eff - q2s));
         float qm2 = 0;
-        if (cfg_.quant == QuantMode::Int8)
+        if (scan_uses_int8)
             for (int j = 0; j < s2; j++) qm2 += 0.5f * pr2_scale_[j] * std::fabs(pq2[j]);
 
         b2.resize((size_t)k1);
@@ -898,7 +978,7 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
         float qr1m = std::sqrt(std::max(0.0f, qn_eff * qn_eff - q1sm));
         float qr2m = std::sqrt(std::max(0.0f, qn_eff * qn_eff - q2sm));
         float qm1m = 0, qm2m = 0;
-        if (cfg_.quant == QuantMode::Int8) {
+        if (scan_uses_int8) {
             for (int j = 0; j < s1; j++) qm1m += 0.5f * pr1_scale_[j] * std::fabs(pq1m[j]);
             for (int j = 0; j < s2; j++) qm2m += 0.5f * pr2_scale_[j] * std::fabs(pq2m[j]);
         }
@@ -1261,6 +1341,19 @@ bool MadhavaL2::load_index(const std::string& path) {
     }
     ok &= fread(pr1_scale_, sizeof(float), (size_t)s1, f) == (size_t)s1;
     if (s2 > 0) ok &= fread(pr2_scale_, sizeof(float), (size_t)s2, f) == (size_t)s2;
+    // SCAN INT8: the index file stores pr1_f_ (float32); if scan_int8 is on,
+    // rebuild the int8 pr1_ from pr1_f_ (the file format is unchanged). Only
+    // after pr1_scale_ is read (needed for the quantization).
+    if (cfg_.scan_int8 && cfg_.quant == QuantMode::None && ok) {
+        pr1_ = new int8_t[(size_t)n * s1];
+        for (int i = 0; i < n; i++)
+            quantize(pr1_f_ + (size_t)i * s1, pr1_ + (size_t)i * s1, pr1_scale_, s1);
+        if (s2 > 0 && pr2_f_ != nullptr) {
+            pr2_ = new int8_t[(size_t)n * s2];
+            for (int i = 0; i < n; i++)
+                quantize(pr2_f_ + (size_t)i * s2, pr2_ + (size_t)i * s2, pr2_scale_, s2);
+        }
+    }
     ok &= fread(e1_, sizeof(float), (size_t)n, f) == (size_t)n;
     if (s2 > 0) ok &= fread(e2_, sizeof(float), (size_t)n, f) == (size_t)n;
     ok &= fread(vn_, sizeof(float), (size_t)n, f) == (size_t)n;
@@ -1325,9 +1418,8 @@ AuditResult MadhavaL2::search_audited(const float* query, int64_t k,
     // arXiv d=1536) that came from recomputing bounds with inconsistent state.
     AuditResult out;
     if (!built_) return out;
-    int N = n_, D = cfg_.dim, s1 = cfg_.stage1_dim;
+    int N = n_;
     int K = (int)std::min<int64_t>(k, cfg_.k);
-    bool is_l2 = (cfg_.metric == Metric::L2);
     auto t0 = std::chrono::high_resolution_clock::now();
 
     // The search() call with the hook enabled captures the exact pruning
@@ -1339,114 +1431,64 @@ AuditResult MadhavaL2::search_audited(const float* query, int64_t k,
     out.audit_candidates = N;                 // the motor examined all N docs
     out.audit_excluded = n_pruned;            // = pruned_by_bound, by construction
 
-    // If the hook was already on in this Config, the caller gets the values;
-    // otherwise (audit_record was false) the search() we just ran above used
-    // audit_record=true? No — audit_record is read from cfg_. It is const and
-    // cannot be toggled here. So we force it via a non-const path: the hook
-    // must be enabled at build time. To keep this method usable regardless,
-    // if audit_ids is empty but pruned_by_bound > 0, we fall back to the
-    // witness-by-construction path below (which uses the SAME worst the motor
-    // exposed as audit_threshold).
-    const bool hook_fired = !base.audit_ids.empty() || base.pruned_by_bound == 0;
-    if (hook_fired) {
-        // Witness path: the motor already captured the excluded docs.
-        const double thr = base.audit_threshold;
-        std::vector<char> in_topk(N, 0);
-        for (int idx : base.indices) in_topk[idx] = 1;
-        out.audit.reserve(base.audit_ids.size() + base.indices.size());
-        // Records for the excluded docs (the witness list).
-        for (size_t i = 0; i < base.audit_ids.size(); ++i) {
-            int64_t id = base.audit_ids[i];
-            double ub = base.audit_ubs[i];
-            double resid = base.audit_residuals.size() > i ? (double)base.audit_residuals[i]
-                                                          : 0.0;   // captured at decision time
-            AuditRecord rec;
-            rec.doc_id = id;
-            // projected_cosine = ub - residual - (quant margin / safety margin),
-            // i.e. the components the motor used — recovered, never re-derived.
-            double margin = (cfg_.quant == QuantMode::Int8) ? 0.0 : 1e-4;
-            rec.projected_cosine = ub - resid - margin;
-            rec.residual_norm = resid;
-            rec.true_cosine = (double)exact_score((int)id, query);
-            rec.upper_bound = ub;             // the motor's exact UB at decision time
-            rec.threshold = thr;              // the motor's exact heap[0] threshold
-            rec.excluded = true;
-            rec.stage = "stage1";
-            out.audit.push_back(std::move(rec));
-        }
-        // Records for the kept top-K (survived / in_topk).
-        for (int idx : base.indices) {
-            AuditRecord rec;
-            rec.doc_id = idx;
-            rec.true_cosine = (double)exact_score(idx, query);
-            rec.projected_cosine = 0.0;
-            rec.residual_norm = 0.0;
-            rec.upper_bound = 0.0;
-            rec.threshold = thr;
-            rec.excluded = false;
-            rec.stage = "in_topk";
-            out.audit.push_back(std::move(rec));
-        }
-    } else {
-        // Fallback: the hook was not enabled at build (audit_record=false in
-        // cfg_). Rebuild the witness from the motor's own exposed threshold.
-        // (This is still a witness — it uses audit_threshold that search()
-        // set, and the same ub_raw; it is only the record expansion.)
-        const double thr = base.audit_threshold;
-        std::vector<char> in_topk(N, 0);
-        for (int idx : base.indices) in_topk[idx] = 1;
-        float pq1[256];
-        float q1s = 0;
-        const float* qproj = query;
-        std::vector<float> qbuf;
-        float qn = std::sqrt(dot_f32(query, query, D));
-        float qn_eff = (cfg_.metric == Metric::Cosine && cfg_.normalize_input) ? 1.0f : qn;
-        if ((cfg_.metric == Metric::Cosine) && cfg_.normalize_input && qn > 1e-10f) {
-            qbuf.resize((size_t)D);
-            float inv = 1.0f / qn;
-            for (int j = 0; j < D; j++) qbuf[j] = query[j] * inv;
-            qproj = qbuf.data();
-        }
-        for (int j = 0; j < s1; j++) { pq1[j] = dot_f32(qproj, P1_ + (size_t)j * D, D); q1s += pq1[j] * pq1[j]; }
-        float qr1 = std::sqrt(std::max(0.0f, qn_eff * qn_eff - q1s));
-        float qm1 = 0;
-        if (cfg_.quant == QuantMode::Int8)
-            for (int j = 0; j < s1; j++) qm1 += 0.5f * pr1_scale_[j] * std::fabs(pq1[j]);
-        float qn2 = qn_eff * qn_eff;
-        out.audit.reserve(N);
-        int64_t n_excl = 0;
-        for (int i = 0; i < N; i++) {
-            float ub = ub_raw(i, 1, pq1, qr1, qm1);
-            bool excl;
-            if (is_l2) {
-                float lb = vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub;
-                excl = lb > thr;
-            } else {
-                excl = ub < thr;
-            }
-            if (!excl) continue;
-            n_excl++;
-            AuditRecord rec;
-            rec.doc_id = i;
-            rec.projected_cosine = (double)ub - (double)e1_[i] * (double)qr1 - (cfg_.quant == QuantMode::Int8 ? (double)qm1 : 1e-4);
-            rec.residual_norm = (double)e1_[i] * (double)qr1;
-            rec.true_cosine = (double)exact_score(i, query);
-            rec.upper_bound = (double)ub;
-            rec.threshold = thr;
-            rec.excluded = true;
-            rec.stage = "stage1";
-            out.audit.push_back(std::move(rec));
-        }
-        out.audit_excluded = n_excl;
-        // top-K records
-        for (int idx : base.indices) {
-            AuditRecord rec;
-            rec.doc_id = idx;
-            rec.true_cosine = (double)exact_score(idx, query);
-            rec.projected_cosine = 0.0; rec.residual_norm = 0.0; rec.upper_bound = 0.0;
-            rec.threshold = thr; rec.excluded = false; rec.stage = "in_topk";
-            out.audit.push_back(std::move(rec));
-        }
+    // WITNESS PATH ONLY (2026-09-03, 1.9.11): the motor's search() ALWAYS
+    // captures the per-document pruning decision (audit_ids/audit_ubs/
+    // audit_threshold/audit_residuals) — the audit hook at the end of search()
+    // is UNCONDITIONAL, so audit_ids is populated whenever the search returned
+    // K results. There is NO fallback here by design: this method must NEVER
+    // recompute the Cauchy-Schwarz bounds after the fact — the 1.9.0 bug
+    // (462/973 false "excluded" on arXiv d=1536) came from exactly that
+    // "judge" pattern. The removed `else` branch (rebuild the witness from
+    // audit_threshold) was dead code (cfg_.audit_record is never read by
+    // search()) AND architecturally wrong.
+    //
+    // FIX (2026-09-03, 1.9.11): HONOR max_audit_records. The old code
+    // materialized an AuditRecord for EVERY excluded doc regardless of the
+    // parameter — at d=1536 pca_corpus that was ~20k records per call (~37ms,
+    // ~2.7MB audit_json) even with max_audit_records=50. The count
+    // (audit_excluded) stays EXACT (it is base.audit_ids.size()); only the
+    // per-doc record expansion is capped at max_audit_records (the records most
+    // useful for spot-check audit). The top-K in_topk records are few and
+    // always included.
+    const int64_t mar = std::max<int64_t>(0, max_audit_records);
+    const double thr = base.audit_threshold;
+    size_t n_excl_records = 0;
+    out.audit.reserve((size_t)std::min<int64_t>(base.audit_ids.size(), mar)
+                      + base.indices.size());
+    // Records for the excluded docs (the witness list), capped at `mar`.
+    for (size_t i = 0; i < base.audit_ids.size(); ++i) {
+        if ((int64_t)n_excl_records >= mar) break;   // max_audit_records honored
+        int64_t id = base.audit_ids[i];
+        double ub = base.audit_ubs[i];
+        double resid = base.audit_residuals.size() > i ? (double)base.audit_residuals[i]
+                                                      : 0.0;   // captured at decision time
+        AuditRecord rec;
+        rec.doc_id = id;
+        // projected_cosine = ub - residual - (quant margin / safety margin),
+        // i.e. the components the motor used — recovered, never re-derived.
+        double margin = (cfg_.quant == QuantMode::Int8) ? 0.0 : 1e-4;
+        rec.projected_cosine = ub - resid - margin;
+        rec.residual_norm = resid;
+        rec.true_cosine = (double)exact_score((int)id, query);
+        rec.upper_bound = ub;             // the motor's exact UB at decision time
+        rec.threshold = thr;              // the motor's exact heap[0] threshold
+        rec.excluded = true;
+        rec.stage = "stage1";
+        out.audit.push_back(std::move(rec));
+        n_excl_records++;
+    }
+    // Records for the kept top-K (survived / in_topk).
+    for (int idx : base.indices) {
+        AuditRecord rec;
+        rec.doc_id = idx;
+        rec.true_cosine = (double)exact_score(idx, query);
+        rec.projected_cosine = 0.0;
+        rec.residual_norm = 0.0;
+        rec.upper_bound = 0.0;
+        rec.threshold = thr;
+        rec.excluded = false;
+        rec.stage = "in_topk";
+        out.audit.push_back(std::move(rec));
     }
 
     out.base.latency_ms = std::chrono::duration<double, std::milli>(
@@ -1552,8 +1594,13 @@ AuditCommitment MadhavaL2::search_with_commitment(const float* query, int64_t k,
     float q1s = 0;
     for (int j = 0; j < s1; j++) { pq1[j] = dot_f32(qproj, P1_ + (size_t)j * D, D); q1s += pq1[j] * pq1[j]; }
     float qr1 = std::sqrt(std::max(0.0f, qn_eff * qn_eff - q1s));
+    // SCAN INT8: the quant margin qm is needed when ub_raw uses the int8
+    // projections — native Int8 quant OR the opt-in scan_int8 on a float32
+    // corpus (which keeps pr1_ int8 alongside pr1_f_).
+    const bool scan_uses_int8 = (cfg_.quant == QuantMode::Int8)
+        || (cfg_.scan_int8 && pr1_ != nullptr && pr1_scale_ != nullptr);
     float qm1 = 0;
-    if (cfg_.quant == QuantMode::Int8)
+    if (scan_uses_int8)
         for (int j = 0; j < s1; j++) qm1 += 0.5f * pr1_scale_[j] * std::fabs(pq1[j]);
     float qn2 = qn_eff * qn_eff;
 

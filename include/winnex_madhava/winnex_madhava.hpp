@@ -110,11 +110,19 @@ struct Config {
     // Parallelism
     int n_threads = 0;        // 0 = use omp_get_max_threads()
 
-    // Audit hook: when true, search() captures the per-document pruning
-    // decision AT THE MOMENT it is made (audit_ids/audit_ubs/audit_threshold
-    // on SearchResult). This is what makes search_audited a WITNESS of the
-    // motor's exact decision, not a recomputing judge. Default false so the
-    // normal search path costs nothing extra.
+    // Audit hook: search() ALWAYS captures the per-document pruning decision
+    // AT THE MOMENT it is made (audit_ids/audit_ubs/audit_threshold/
+    // audit_residuals on SearchResult) — the hook at the end of search() is
+    // UNCONDITIONAL since 1.9.1. This is what makes search_audited a WITNESS
+    // of the motor's exact decision, not a recomputing judge (there is NO
+    // fallback that recomputes bounds — removed in 1.9.11).
+    //
+    // NOTE (2026-09-03, 1.9.11): `audit_record` is kept ONLY for API backward
+    // compatibility. It is NOT read by search() — the audit capture always
+    // runs and its O(N) cost is paid on every search (Gargalo #2, parallelized
+    // with OpenMP). Setting it to false does NOT disable the capture. To avoid
+    // the per-search O(N) audit scan entirely, callers must use a build without
+    // the hook (not currently exposed) — this flag is a no-op.
     bool audit_record = false;
 
     // EXHAUSTIVE AUDIT MODE (2026-09-03): when true, search() FORCES the
@@ -136,6 +144,23 @@ struct Config {
     // certificate covers the whole corpus. Default false (historical behavior,
     // no perf change).
     bool audit_exhaustive = false;
+
+    // SCAN INT8 (2026-09-03): for a FLOAT32 corpus (quant=QuantMode::None), the
+    // motor keeps ONLY the float32 projections pr1_f_ (4B/doc/dim) and the
+    // Stage-1 scan reads them from DRAM every query — memory-bound at large N
+    // (measured: pr1_f_ = N·s1·4B exceeds L3 beyond ~40k docs and the scan
+    // degrades). When scan_int8=true, the motor ALSO quantizes the Stage-1
+    // projections to int8 (pr1_ + pr1_scale_, 1B/doc/dim) and ub_raw uses
+    // dot_int8_scaled for the scan — ~2-2.4× faster (validated: prototype
+    // measured 1.6-2.4× with 0 dangerous flips: the int8 bound never excludes a
+    // doc the float32 bound keeps, so recall is preserved; the quant margin qm
+    // covers the error). pr1_f_ is RETAINED for e(v)/exact (the residual needs
+    // the real float32 projection; only the scan uses int8).
+    //
+    // Memory cost: +N·s1 bytes (int8) on top of N·s1·4B (float32) = +25%.
+    // Default false: identical behavior to before (float32 scan). Callers at
+    // large N who want the faster scan opt in.
+    bool scan_int8 = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -337,9 +362,11 @@ public:
     SearchResult search(const float* query, const std::vector<float>& query_norm) const;
     SearchResult search(const float* query) const; // computes norm internally
 
-    // Search with the audit hook forced on (the witness path). The normal
-    // search() uses cfg_.audit_record; this one always captures the
-    // per-document pruning decision so search_audited can read it.
+    // Search with the audit hook (the witness path). NOTE (2026-09-03, 1.9.11):
+    // the normal search() ALREADY captures the per-document pruning decision
+    // unconditionally (the hook is not gated by cfg_.audit_record, which is a
+    // no-op kept for API compatibility). search_with_audit is retained as an
+    // explicit alias for clarity.
     SearchResult search_with_audit(const float* query) const;
 
     // M1 (v1.8.0): batch search — processa nq queries de uma vez.

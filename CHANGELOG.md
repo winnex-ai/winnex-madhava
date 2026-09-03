@@ -5,6 +5,47 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.11] — 2026-09-03
+
+### Added: `scan_int8` — opt-in int8 projection scan for float32 corpora
+
+**Gargalo atacado:** o scan do Stage-1 (o custo dominante do `search()` em N
+grande) relê `pr1_f_` (projeções float32, 4B/doc/dim) do DRAM a cada query.
+Medido: `pr1_f_` = N·s1·4B excede o L3 além de ~40k docs e o scan degrada
+(100k docs, d=1536, s1=192 → 77MB/query → ~3.5ms).
+
+**Mudança:** `build_engine(..., scan_int8=True)` (novo knob do Config) — para um
+corpus float32 (`quant="none"`), o motor TAMBÉM quantiza as projeções Stage-1
+para int8 (`pr1_` + `pr1_scale_`, 1B/doc/dim) e o `ub_raw` usa `dot_int8_scaled`
+no scan. `pr1_f_` é MANTIDO (o residual e(v) e o exact precisam da projeção
+float32 real; só o scan usa int8). `search_with_commitment` e a modulação Stage-2
+usam a mesma margem de quantização `qm` (o scan_uses_int8 cobre os dois).
+
+**Ganho medido (motor real, OpenMP):** search N=100k d=1536: 3.51ms → 2.06ms
+(1.71×); N=50k: 1.24ms → 0.87ms (1.42×). Validado por protótipo standalone
+(1.6-2.4× single-thread) e por teste no motor.
+
+**Corretude/segurança:** a margem de quantização `qm` (já existente no caminho
+Int8) cobre o erro; o protótipo mediu **0 flips perigosos** (o bound int8 nunca
+exclui um doc que o float32 mantém) → recall preservado. Validado: recall@10 =
+1.0000 com 0 violações em random E pca_corpus (d=1536), scan_int8 on e off.
+
+**Correção de escala no `set_basis`:** quando o PCA troca a base (`set_basis`),
+a escala int8 calibrada na base RANDOM original saturava (recall caiu p/ 0.85
+medido). O `set_basis` agora recalibra a escala per-axis na nova base antes de
+quantizar → recall restaurado a 1.0.
+
+**Custo:** memória +N·s1 bytes (int8) sobre N·s1·4B (float32) = +25%.
+**Default `false`** — comportamento idêntico ao anterior (scan float32 exato).
+Opt-in para throughput em N grande.
+
+**Outros (1.9.11):** `search_audited` HONRA `max_audit_records` (o trail era
+materializado inteiro — 20k records em d=1536 pca mesmo com max=50 → ~37ms; agora
+cap na expansão, count `audit_excluded` exato). Removido o fallback que
+RECOMPUTAVA os bounds no `search_audited` (código morto + arquiteturalmente
+errado — o hook do search() é incondicional; o fallback era o padrão "juiz" do
+bug 1.9.0).
+
 ## [1.9.10] — 2026-09-03
 
 ### Added: `recall_guarantee` + `audit_exhaustive` — the honest statement of scope

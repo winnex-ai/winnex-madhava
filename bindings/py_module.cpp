@@ -64,7 +64,8 @@ PYBIND11_MODULE(_winnex_madhava, m) {
         .def_readwrite("early_exit", &Config::early_exit)
         .def_readwrite("n_threads", &Config::n_threads)
         .def_readwrite("audit_record", &Config::audit_record)
-        .def_readwrite("audit_exhaustive", &Config::audit_exhaustive);
+        .def_readwrite("audit_exhaustive", &Config::audit_exhaustive)
+        .def_readwrite("scan_int8", &Config::scan_int8);
 
     py::class_<SearchResult>(m, "SearchResult")
         .def_readonly("indices", &SearchResult::indices)

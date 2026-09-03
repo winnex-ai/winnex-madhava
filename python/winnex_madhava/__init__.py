@@ -130,6 +130,12 @@ def build_engine(
     # Cost: O(N·d) per query (no recall pruning). For audit/compliance/WORM
     # consumers that sign a certificate. Default False = historical behavior.
     audit_exhaustive: bool = False,
+    # SCAN INT8 (2026-09-03): on a FLOAT32 corpus, also quantize the Stage-1
+    # projections to int8 and use them for the bound scan (~2-2.4× faster at
+    # large N; validated safe — never excludes a doc the float32 bound keeps).
+    # pr1_f_ is retained for e(v)/exact. Memory +25%. Default False = exact
+    # float32 scan (historical). Opt in for large-N throughput.
+    scan_int8: bool = False,
     seed: int = 42,
     # Hybrid (MadHybrid) mode — same engine, clustered for sublinear query
     hybrid: bool = False,
@@ -277,6 +283,8 @@ def build_engine(
     # Exhaustive audit (2026-09-03): the C++ search() forces k1=k2=N and
     # disables early_exit when this is set, so recall_guarantee == "exact_global".
     cfg.audit_exhaustive = bool(audit_exhaustive)
+    # Scan int8 (opt-in fast scan for float32 corpora) — quantize projections.
+    cfg.scan_int8 = bool(scan_int8)
 
     if hybrid:
         # Same engine, run per cluster (MadHybrid). The corpus may be
