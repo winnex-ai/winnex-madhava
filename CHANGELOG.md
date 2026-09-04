@@ -5,6 +5,52 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.13] — 2026-09-04
+
+### Fixed: Fusion-B shared-state data race → per-query UB buffer (thread-safe search)
+
+The 1.9.12 Fusion-B stored the Stage-1 UB in a `mutable` engine member
+(`ub_scan_`) that the audit hook and `search_with_commitment` read AFTER the
+parallel Stage-1 scan. Because `search()` is const, concurrent calls on the
+SAME engine (which `search_batch`'s OpenMP does) raced on that buffer: query
+A's audit could read query B's UB, corrupting `audit_ids`/`pruned_by_bound`
+nondeterministically. Now the Stage-1 UB lives in a LOCAL per-query buffer
+(`ub_local`, disjoint index writes = thread-safe under the parallel-for),
+and `search_with_commitment` materializes its own. `search()` is const and
+thread-safe for CONCURRENT calls again. Regression test:
+`test_search_threadsafe_under_concurrency` (24 queries × 8 threads,
+bit-identical to serial). No behavior change single-threaded.
+
+### Added: GPU Stage-1 bound scan (OpenCL) — `bound_stage1` kernel + upload-once
+
+Accelerates the bound engine's O(N) Stage-1 scan on the GPU WITHOUT changing
+the math or the guarantee:
+
+- `bound_stage1` OpenCL kernel: coalesced scan over the projection matrix
+  `pr1` ([N × s1] float32) + per-doc residual `e1`, computing the exact
+  `ub_raw` per doc and materializing the same sortable score the CPU Stage-1
+  `nth_element` uses. Parity-validated: the k1 survivor set is bit-identical
+  to the CPU path (test `test_bound_stage1_gpu_parity`).
+- Why a dedicated kernel (not reusing the SpeedEngine QKᵀ): the bound metric
+  needs the ALREADY-PROJECTED query entering raw; the SpeedEngine cosine path
+  normalizes the query and the L2 path applies the ‖v‖² term — both measured
+  to corrupt the bound ranking. Tested and rejected.
+- Rewritten to the M-workgroup pattern (like `qkt_fused_topk`) so all SMs are
+  active: the scan dropped from ~12ms to 0.75ms at N=500k (the original
+  1-workgroup version used a single SM).
+- Upload-once helpers `madhava_gpu_stage1_init/scan/free`: pr1/e1/vn_eff are
+  uploaded to the device ONCE; each query uploads only the projected query.
+- `MadhavaL2::enable_gpu_stage1(opencl_lib)` + integration in `search()`: when
+  active, the Stage-1 scan runs on the GPU; the rest (nth_element, stage-2,
+  postfilter, audit) is unchanged. Parity is bit-identical (test
+  `test_enable_gpu_stage1_search_parity`: indices/k1/pruned_by_bound/audit_ids/
+  recall_guarantee/0-viol == CPU across 7 queries). Opt-in, default off.
+
+Honest perf note: the end-to-end speedup in `search()` is ~1.3× at N=300–500k
+(the isolated scan is 0.75ms vs ~12ms CPU, but the search also pays
+transfer/sort/postfilter/audit O(N) costs). The kernel is correct and
+parity-proven; measure on the real workload before investing further.
+
 ## [1.9.11] — 2026-09-03
 
 ### Added: `scan_int8` — opt-in int8 projection scan for float32 corpora
