@@ -897,11 +897,16 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     float qn2 = qn_eff * qn_eff;
 
     // Stage-1: bound pruning over all N.
+    // FUSION (2026-09-04): esta passagem computa UB(v,q) para TODOS os N. O
+    // valor é GUARDADO em ub_scan_ (buffer reusado) para o audit hook reusar —
+    // eliminando a 2ª varredura O(N·s1) que recomputava ub_raw depois do top-K.
     out.bound_pairs = N;
     std::vector<std::pair<float, int>> b1((size_t)N);
+    ub_scan_.resize((size_t)N);
 #pragma omp parallel for
     for (int i = 0; i < N; i++) {
         float ub = ub_raw(i, 1, pq1, qr1, qm1);
+        ub_scan_[(size_t)i] = ub;   // FUSION: guarda p/ o audit reusar
         // Score for sorting:
         //   L2:    lb = ‖v‖² + ‖q‖² − 2·ub   (ascending = best)
         //   Cosine: ub (descending = best) — sort ascending on −ub
@@ -964,9 +969,22 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     // Rank the survivors:
     //   - If modulation is on, rank by modulated = B1 + α(B2−B1)
     //   - Else rank by the (already computed) bound score.
+    //
+    // FUSION A (2026-09-04): quando o postfilter roda SEM early_exit (o
+    // default), TODOS os k2 são re-pontuados por exact_score e o ranking final
+    // é por partial_sort do exact — a ORDEM do `ranked` (modulação) NÃO afeta o
+    // resultado. Então a modulação (que recomputa B1/B2 + varre e1_sum sobre N)
+    // é DESNECESSÁRIA: pulamos o bloco e usamos os survivors (ordem do bound)
+    // direto. O modulation_gain vira 0 (métrica — resultado idêntico). Só roda
+    // a modulação quando ela importa: postfilter=false (ranking por bound) OU
+    // early_exit=true (a ordem de avaliação afeta onde o early_exit para).
+    const bool pf_eff_A = cfg_.postfilter || cfg_.audit_exhaustive;
+    const bool ee_eff_A = cfg_.early_exit && !cfg_.audit_exhaustive;
+    const bool modulation_needed = cfg_.modulation && s2 > 0
+        && (!pf_eff_A || ee_eff_A);
     std::vector<std::pair<float, int>> ranked(k2);
     double mod_gain = 0.0;
-    if (cfg_.modulation && s2 > 0) {
+    if (modulation_needed) {
         // Recompute B1/B2 for the k2 survivors to build the modulated score.
         float pq1m[256], pq2m[256];
         for (int j = 0; j < s1; j++) pq1m[j] = pq1[j];
@@ -1173,7 +1191,10 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
 #pragma omp parallel for
             for (int i = 0; i < N; i++) {
                 const int t = wm_omp_thread_num();
-                float ub = ub_raw(i, 1, pq1, qr1, qm1);
+                // FUSION (2026-09-04): REUSA o UB já computado na passagem 1
+                // (ub_scan_), em vez de recomputar ub_raw — elimina a 2ª
+                // varredura O(N·s1). O ub é o MESMO (mesmos pq1/qr1/qm1).
+                float ub = ub_scan_[(size_t)i];
                 float resid = e1_[i] * qr1;
                 if (is_l2) {
                     float lb = vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub;
@@ -1633,7 +1654,10 @@ AuditCommitment MadhavaL2::search_with_commitment(const float* query, int64_t k,
     // nearest the cut — the ones regulators spot-check.
     float band = 0.01f * (1.0f + std::fabs(worst));
     for (int i = 0; i < N; i++) {
-        float ub = ub_raw(i, 1, pq1, qr1, qm1);
+        // FUSION (2026-09-04): reusa o UB da passagem 1 (search() preencheu
+        // ub_scan_) em vez de recomputar ub_raw — o commitment chama search()
+        // logo acima, então ub_scan_ já está preenchido para ESTA query.
+        float ub = ub_scan_[(size_t)i];
         bool excl;
         if (is_l2) {
             float lb = vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub;
@@ -1665,7 +1689,8 @@ AuditCommitment MadhavaL2::search_with_commitment(const float* query, int64_t k,
         std::vector<AuditSample> reservoir;
         reservoir.reserve((size_t)ms);
         for (int i = 0; i < N; i++) {
-            float ub = ub_raw(i, 1, pq1, qr1, qm1);
+            // FUSION (2026-09-04): reusa ub_scan_ (preenchido pelo search()).
+            float ub = ub_scan_[(size_t)i];
             bool excl;
             if (is_l2) {
                 float lb = vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub;

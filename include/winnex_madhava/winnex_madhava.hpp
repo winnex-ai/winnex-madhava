@@ -467,6 +467,14 @@ private:
     float* e2_ = nullptr;       // [n] residual (Stage-2)
     float* vn_ = nullptr;       // [n] L2 norms of the raw vectors
     float* vn_eff_ = nullptr;   // [n] effective norm used by the metric (1.0 if cosine-normalized)
+
+    // FUSION (2026-09-04): reusable per-query scratch. The Stage-1 bound scan
+    // (passage 1) computes UB(v,q) for ALL N and stores it here; the audit hook
+    // (formerly passage 5) REUSES it instead of recomputing ub_raw — eliminating
+    // the second O(N·s1) bound scan. mutable because search() is const but
+    // reuses this scratch across queries (not thread-safe for concurrent
+    // search() on the SAME engine — document: one search at a time per engine).
+    mutable std::vector<float> ub_scan_;   // [n] Stage-1 UB per doc (passage 1)
 };
 
 // ---------------------------------------------------------------------------
