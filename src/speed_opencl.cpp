@@ -230,6 +230,68 @@ __kernel void l2_correct(__global float* scores, __global const float* norms,
     scores[idx] = 2.0f * scores[idx] - norms[vi];
 }
 
+// BOUND STAGE-1 SCAN (2026-09-04) — the Phase-2 GPU kernel.
+// Computes the Cauchy-Schwarz upper bound for every doc in one coalesced pass:
+//
+//     UB(v,q) = dot(pr1[v], pq) + e1[v]·qr + qm + eps     (exactly ub_raw)
+//
+// and materializes the SORTABLE score the CPU Stage-1 uses for its nth_element
+// k1 cut, so the k1 survivor set is bit-identical to the CPU path:
+//
+//     L2:     score = ||v_eff||^2 + ||q_eff||^2 − 2·UB   (ascending = best)
+//     cosine: score = −UB                                (descending = best)
+//
+// pr1 is the per-doc projection matrix [N x s1] (float32, row-major) that the
+// bound engine computes at build (pr1_f_). e1 is the per-doc residual
+// ||v − P^T P v|| [N]. The query is passed ALREADY PROJECTED (pq, [s1]) with
+// its residual qr and int8 quant margin qm — computed on the host exactly as
+// search() does — so the kernel does NOT normalize anything (the bound metric
+// needs the raw projected query; reusing the SpeedEngine cosine/L2 paths was
+// measured to corrupt the ranking).
+//
+// Grid: nq work-groups x lsz work-items (the qkt pattern). The query (<=512
+// floats) is loaded into local memory once and reused by every work-item.
+// vn_eff ([N]) is the per-doc effective norm (1.0 for cosine+normalize) used
+// only by the L2 score; for cosine it is unused (pass a null-safe dummy).
+__kernel void bound_stage1(__global const float* pq_batch, __global const float* pr1,
+                           __global const float* e1, __global const float* vn_eff,
+                           __global float* scores, __global const float* bias_batch,
+                           int nq, int N, int s1, int qn2_use_vn, int is_l2) {
+    int qi = get_group_id(0);
+    if (qi >= nq) return;
+    int lid = get_local_id(0), lsz = get_local_size(0);
+
+    // Load the projected query + its scalar bias into local memory.
+    __local float lpq[512];
+    __local float lqr, lqm, lqn2, leps;
+    for (int j = lid; j < s1; j += lsz) lpq[j] = pq_batch[qi * s1 + j];
+    if (lid == 0) {
+        lqr = bias_batch[qi * 3 + 0];  // qr (query residual)
+        lqm = bias_batch[qi * 3 + 1];  // qm (int8 quant margin, 0 if unused)
+        lqn2 = bias_batch[qi * 3 + 2]; // ||q_eff||^2 (1.0 for cosine+normalize)
+        leps = 1e-4f;                  // the motor's float32 safety margin
+    }
+    barrier(CLK_LOCAL_MEM_FENCE);
+
+    const float qr = lqr, qm = lqm, qn2 = lqn2, eps = leps;
+    const float scale = qn2_use_vn ? 1.0f : 0.0f;  // vn term only for L2
+
+    // Coalesced scan over pr1 rows. Adjacent work-items read adjacent pr1 rows
+    // (row-major) → each 32B cache line is used by the whole warp.
+    for (int vi = lid; vi < N; vi += lsz) {
+        const __global float* row = pr1 + (size_t)vi * s1;
+        float ip = 0.0f;
+        for (int j = 0; j < s1; j++) ip += lpq[j] * row[j];
+        float ub = ip + e1[vi] * qr + qm + eps;
+        // vn term: for L2 the CPU score is ||v_eff||^2 + ||q_eff||^2 − 2·UB.
+        // vn_eff[vi] is the doc's effective norm (raw for L2). qn2_use_vn=1
+        // signals the L2 path (vn_eff holds real norms); cosine passes a dummy
+        // (vn_eff all 1.0) and scale=0 → vn² term dropped.
+        float vn2 = vn_eff[vi] * vn_eff[vi] * scale;
+        scores[(size_t)qi * N + vi] = is_l2 ? (vn2 + qn2 - 2.0f * ub) : -ub;
+    }
+}
+
 // Per-row topk PARALELO (divide-and-conquer): o scan de N é o gargalo.
 // topk_local: M work-groups por query, cada um varre um CHUNK contíguo de N
 //   e mantém um top-k local (insertion sort em local mem). O scan de N vira
@@ -456,6 +518,7 @@ cl_kernel g_ktopk_merge = nullptr;
 cl_kernel g_ktopk_merge_scores = nullptr;
 cl_kernel g_kl2 = nullptr;
 cl_kernel g_knorm = nullptr;
+cl_kernel g_kbound_stage1 = nullptr;   // Phase-2 bound Stage-1 scan
 cl_mem g_corpus = nullptr;   // device copy of the corpus
 cl_mem g_norms = nullptr;    // device copy of ||v||² (L2 only)
 int g_state = -1;            // -1 unknown, 0 unavailable, 1 ready
@@ -465,6 +528,12 @@ cl_mem g_qbuf = nullptr;   size_t g_qcap = 0;
 cl_mem g_sbuf = nullptr;   size_t g_scap = 0;
 cl_mem g_idxbuf = nullptr; size_t g_idxcap = 0;
 cl_mem g_local_idx = nullptr; size_t g_localcap = 0;  // top-k locais (topk_local)
+// Phase-2 bound buffers: pr1 ([N x s1] float32 projections), e1 ([N] residuals),
+// vn_eff ([N] effective norms), bias_batch ([nq x 3]: qr, qm, ||q_eff||^2).
+cl_mem g_bpr1 = nullptr;   size_t g_bpr1_cap = 0;
+cl_mem g_be1 = nullptr;    size_t g_be1_cap = 0;
+cl_mem g_bvn = nullptr;    size_t g_bvn_cap = 0;
+cl_mem g_bbias = nullptr;  size_t g_bbias_cap = 0;
 
 bool cl_err(cl_int e, const char* what) {
     if (e != CL_SUCCESS) {
@@ -538,7 +607,8 @@ void SpeedEngine::init_gpu_impl() {
     g_ktopk = g_ktopk_local;  // alias para compatibilidade
     g_kl2   = clCreateKernel(g_prog, "l2_correct", &err);
     g_knorm = clCreateKernel(g_prog, "normalize_queries", &err);
-    if (!g_kqkt || !g_kqkt_fused || !g_ktopk_local || !g_ktopk_merge || !g_ktopk_merge_scores || !g_kl2 || !g_knorm) { g_state = 0; return; }
+    g_kbound_stage1 = clCreateKernel(g_prog, "bound_stage1", &err);
+    if (!g_kqkt || !g_kqkt_fused || !g_ktopk_local || !g_ktopk_merge || !g_ktopk_merge_scores || !g_kl2 || !g_knorm || !g_kbound_stage1) { g_state = 0; return; }
     g_state = 1;
 }
 
@@ -555,13 +625,19 @@ void SpeedEngine::free_gpu_impl() {
     if (g_ktopk_merge_scores) clReleaseKernel(g_ktopk_merge_scores);
     if (g_kl2) clReleaseKernel(g_kl2);
     if (g_knorm) clReleaseKernel(g_knorm);
+    if (g_kbound_stage1) clReleaseKernel(g_kbound_stage1);
     if (g_local_idx) clReleaseMemObject(g_local_idx);
+    if (g_bpr1) clReleaseMemObject(g_bpr1);
+    if (g_be1) clReleaseMemObject(g_be1);
+    if (g_bvn) clReleaseMemObject(g_bvn);
+    if (g_bbias) clReleaseMemObject(g_bbias);
     if (g_prog) clReleaseProgram(g_prog);
     if (g_queue) clReleaseCommandQueue(g_queue);
     if (g_ctx) clReleaseContext(g_ctx);
     g_corpus = g_norms = g_qbuf = g_sbuf = g_idxbuf = g_local_idx = nullptr;
+    g_bpr1 = g_be1 = g_bvn = g_bbias = nullptr;
     g_kqkt = g_kqkt_fused = g_ktopk_local = g_ktopk_merge = g_ktopk = g_ktopk_merge_scores = nullptr;
-    g_kl2 = g_knorm = nullptr;
+    g_kl2 = g_knorm = g_kbound_stage1 = nullptr;
     g_prog = nullptr; g_queue = nullptr; g_ctx = nullptr;
     g_state = -1;
 }
@@ -777,6 +853,90 @@ void SpeedEngine::scores_gpu(const float* queries, int nq, float* scores_host) c
     clEnqueueReadBuffer(g_queue, sb, CL_TRUE, 0, (size_t)nq * N * 4, scores_host, 0, nullptr, nullptr);
     clReleaseMemObject(qb);
     clReleaseMemObject(sb);
+}
+
+// Phase-2 bound Stage-1 scan on the GPU (see header for the contract).
+void SpeedEngine::bound_stage1_gpu(const float* pq_batch, const float* pr1,
+                                   const float* e1, const float* vn_eff,
+                                   const float* bias, int nq, int N, int s1,
+                                   int is_l2, float* scores_host) const {
+    if (!use_gpu_) return;
+    cl_int err;
+    // s1 <= 512 (the kernel's lpq[512] local buffer).
+    if (s1 > 512) { std::fprintf(stderr, "[Winnex Madhava] bound_stage1_gpu: s1=%d > 512 unsupported\n", s1); return; }
+
+    // pq_batch: [nq x s1] — the already-projected queries, into g_qbuf (reused).
+    size_t pq_need = (size_t)nq * s1 * 4;
+    if (g_qbuf == nullptr || pq_need > g_qcap) {
+        if (g_qbuf) clReleaseMemObject(g_qbuf);
+        g_qcap = pq_need * 2;
+        g_qbuf = clCreateBuffer(g_ctx, CL_MEM_READ_WRITE, g_qcap, nullptr, &err);
+        if (!cl_err(err, "create bound pq buffer")) { return; }
+    }
+    clEnqueueWriteBuffer(g_queue, g_qbuf, CL_TRUE, 0, pq_need, pq_batch, 0, nullptr, nullptr);
+
+    // pr1: [N x s1] float32.
+    size_t pr1_need = (size_t)N * s1 * 4;
+    if (g_bpr1 == nullptr || pr1_need > g_bpr1_cap) {
+        if (g_bpr1) clReleaseMemObject(g_bpr1);
+        g_bpr1_cap = pr1_need * 2;
+        g_bpr1 = clCreateBuffer(g_ctx, CL_MEM_READ_ONLY, g_bpr1_cap, nullptr, &err);
+        if (!cl_err(err, "create bound pr1 buffer")) { return; }
+    }
+    clEnqueueWriteBuffer(g_queue, g_bpr1, CL_TRUE, 0, pr1_need, pr1, 0, nullptr, nullptr);
+
+    // e1: [N]; vn_eff: [N]; bias: [nq x 3].
+    size_t e1_need = (size_t)N * 4;
+    if (g_be1 == nullptr || e1_need > g_be1_cap) {
+        if (g_be1) clReleaseMemObject(g_be1);
+        g_be1_cap = e1_need * 2;
+        g_be1 = clCreateBuffer(g_ctx, CL_MEM_READ_ONLY, g_be1_cap, nullptr, &err);
+        if (!cl_err(err, "create bound e1 buffer")) { return; }
+    }
+    clEnqueueWriteBuffer(g_queue, g_be1, CL_TRUE, 0, e1_need, e1, 0, nullptr, nullptr);
+    if (g_bvn == nullptr || e1_need > g_bvn_cap) {
+        if (g_bvn) clReleaseMemObject(g_bvn);
+        g_bvn_cap = e1_need * 2;
+        g_bvn = clCreateBuffer(g_ctx, CL_MEM_READ_ONLY, g_bvn_cap, nullptr, &err);
+        if (!cl_err(err, "create bound vn_eff buffer")) { return; }
+    }
+    clEnqueueWriteBuffer(g_queue, g_bvn, CL_TRUE, 0, e1_need, vn_eff, 0, nullptr, nullptr);
+    size_t bias_need = (size_t)nq * 3 * 4;
+    if (g_bbias == nullptr || bias_need > g_bbias_cap) {
+        if (g_bbias) clReleaseMemObject(g_bbias);
+        g_bbias_cap = bias_need * 2;
+        g_bbias = clCreateBuffer(g_ctx, CL_MEM_READ_ONLY, g_bbias_cap, nullptr, &err);
+        if (!cl_err(err, "create bound bias buffer")) { return; }
+    }
+    clEnqueueWriteBuffer(g_queue, g_bbias, CL_TRUE, 0, bias_need, bias, 0, nullptr, nullptr);
+
+    // scores: [nq x N] output.
+    size_t s_need = (size_t)nq * N * 4;
+    if (g_sbuf == nullptr || s_need > g_scap) {
+        if (g_sbuf) clReleaseMemObject(g_sbuf);
+        g_scap = s_need * 2;
+        g_sbuf = clCreateBuffer(g_ctx, CL_MEM_READ_WRITE, g_scap, nullptr, &err);
+        if (!cl_err(err, "create bound scores buffer")) { return; }
+    }
+
+    // Launch: nq work-groups x 256 work-items (the qkt pattern).
+    size_t g2[] = {(size_t)nq * 256}, l2[] = {256};
+    clSetKernelArg(g_kbound_stage1, 0, sizeof(cl_mem), &g_qbuf);   // pq_batch (reused query buf)
+    clSetKernelArg(g_kbound_stage1, 1, sizeof(cl_mem), &g_bpr1);
+    clSetKernelArg(g_kbound_stage1, 2, sizeof(cl_mem), &g_be1);
+    clSetKernelArg(g_kbound_stage1, 3, sizeof(cl_mem), &g_bvn);
+    clSetKernelArg(g_kbound_stage1, 4, sizeof(cl_mem), &g_sbuf);
+    clSetKernelArg(g_kbound_stage1, 5, sizeof(cl_mem), &g_bbias);
+    int a6 = nq, a7 = N, a8 = s1;
+    int a9 = is_l2 ? 1 : 0;      // qn2_use_vn: only L2 uses the vn² term
+    int a10 = is_l2 ? 1 : 0;     // is_l2
+    clSetKernelArg(g_kbound_stage1, 6, sizeof(int), &a6);
+    clSetKernelArg(g_kbound_stage1, 7, sizeof(int), &a7);
+    clSetKernelArg(g_kbound_stage1, 8, sizeof(int), &a8);
+    clSetKernelArg(g_kbound_stage1, 9, sizeof(int), &a9);
+    clSetKernelArg(g_kbound_stage1, 10, sizeof(int), &a10);
+    clEnqueueNDRangeKernel(g_queue, g_kbound_stage1, 1, nullptr, g2, l2, 0, nullptr, nullptr);
+    clEnqueueReadBuffer(g_queue, g_sbuf, CL_TRUE, 0, s_need, scores_host, 0, nullptr, nullptr);
 }
 
 } // namespace winnex_madhava

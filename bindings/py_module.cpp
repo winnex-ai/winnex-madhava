@@ -345,7 +345,35 @@ PYBIND11_MODULE(_winnex_madhava, m) {
         .def("dim", &SpeedEngine::dim)
         .def("has_gpu", &SpeedEngine::has_gpu)
         .def("backend_name", &SpeedEngine::backend_name)
-        .def("gpu_reason", &SpeedEngine::gpu_reason);
+        .def("gpu_reason", &SpeedEngine::gpu_reason)
+        .def("bound_stage1_gpu",
+             [](const SpeedEngine& self,
+                py::array_t<float, py::array::c_style> pq_batch,   // [nq x s1]
+                py::array_t<float, py::array::c_style> pr1,        // [N x s1]
+                py::array_t<float, py::array::c_style> e1,         // [N]
+                py::array_t<float, py::array::c_style> vn_eff,     // [N]
+                py::array_t<float, py::array::c_style> bias,       // [nq x 3]
+                int is_l2) {
+                 auto ipq = pq_batch.request(), ipr = pr1.request();
+                 auto ie1 = e1.request(), ivn = vn_eff.request(), ib = bias.request();
+                 int nq = (int)ipq.shape[0], s1 = (int)ipq.shape[1];
+                 int N = (int)ipr.shape[0];
+                 if ((int)ipr.shape[1] != s1) throw std::runtime_error("pr1 cols != s1");
+                 if ((int)ie1.shape[0] != N || (int)ivn.shape[0] != N)
+                     throw std::runtime_error("e1/vn_eff must be length N");
+                 if ((int)ib.shape[0] != nq) throw std::runtime_error("bias rows != nq");
+                 std::vector<float> scores((size_t)nq * N);
+                 self.bound_stage1_gpu((const float*)ipq.ptr, (const float*)ipr.ptr,
+                                       (const float*)ie1.ptr, (const float*)ivn.ptr,
+                                       (const float*)ib.ptr, nq, N, s1, is_l2,
+                                       scores.data());
+                 py::array_t<float> out({(py::ssize_t)nq, (py::ssize_t)N});
+                 auto oi = out.request();
+                 std::memcpy(oi.ptr, scores.data(), scores.size() * sizeof(float));
+                 return out;
+             },
+             py::arg("pq_batch"), py::arg("pr1"), py::arg("e1"), py::arg("vn_eff"),
+             py::arg("bias"), py::arg("is_l2"));
 
     m.def("recall_at_k", &recall_at_k, py::arg("result"), py::arg("gt_set"), py::arg("k"));
     m.def("ndcg_at_k", &ndcg_at_k, py::arg("result"), py::arg("gt_set"), py::arg("k"));

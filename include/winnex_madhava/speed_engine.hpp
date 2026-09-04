@@ -83,6 +83,22 @@ public:
     // queries: (nq, dim) float32 contiguous. Returns nq*k indices.
     SpeedResult search_batch(const float* queries, int nq, int k) const;
 
+    // Phase-2 bound Stage-1 scan on the GPU (2026-09-04). Computes the
+    // Cauchy-Schwarz UB for every doc in one coalesced pass over the projection
+    // matrix pr1 ([N x s1] float32, row-major) and materializes the SORTABLE
+    // score the CPU Stage-1 nth_element uses (L2: ||v||^2+||q||^2−2·UB;
+    // cosine: −UB) into scores_host[nq·N]. vn_eff ([N]) is the per-doc
+    // effective norm (used for the L2 score; pass a dummy for cosine).
+    // bias[nq·3] = per-query {qr, qm, ||q_eff||^2} — computed on the host
+    // exactly as search() does. The query pq_batch is the ALREADY-PROJECTED
+    // query ([nq x s1]); the kernel does NOT normalize it (the bound metric
+    // needs the raw projected query — reusing the cosine/L2 normalization was
+    // measured to corrupt the ranking). Requires has_gpu(); buffers reused.
+    void bound_stage1_gpu(const float* pq_batch, const float* pr1,
+                          const float* e1, const float* vn_eff,
+                          const float* bias, int nq, int N, int s1,
+                          int is_l2, float* scores_host) const;
+
     int num_vectors() const { return n_; }
     int dim() const { return dim_; }
 

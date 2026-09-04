@@ -265,6 +265,14 @@ SpeedResult SpeedEngine::scores_gpu_topk(const float*, int, int,
     SpeedResult r;  // unreachable without a GPU backend
     return r;
 }
+
+// Stub for the Phase-2 bound Stage-1 scan (defined in speed_opencl.cpp when a
+// GPU backend is present). Never called when use_gpu_ is false.
+void SpeedEngine::bound_stage1_gpu(const float*, const float*, const float*,
+                                   const float*, const float*, int, int, int,
+                                   int, float*) const {
+    // unreachable without a GPU backend
+}
 #endif
 
 // --- Single-query search (CPU) --------------------------------------------

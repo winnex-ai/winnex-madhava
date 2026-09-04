@@ -11,6 +11,7 @@ performance. They check:
 Skipped automatically when torch/CUDA is unavailable.
 Run:  python -m pytest tests/python/ -v
 """
+import os
 import numpy as np
 import pytest
 
@@ -93,3 +94,72 @@ def test_speed_exact_is_scan():
     )
     q = X[0].astype(np.float32)
     assert list(eng.search(q, k=10).indices) == list(eng.search_exact(q, k=10).indices)
+
+
+def _bound_engine_and_index(tmp_path, N=3000, d=96, s1=48, seed=42):
+    """Build a real bound engine (quant='none') and return (engine, parsed arrays)."""
+    rng = np.random.RandomState(seed)
+    comp = rng.randn(12, d).astype(np.float32)
+    X = (rng.randn(N, 12).astype(np.float32) @ comp)
+    X /= np.linalg.norm(X, axis=1, keepdims=True)
+    eng = winnex_madhava.build_engine(
+        X, dim=d, k=10, metric="cosine", quant="none",
+        stage1_dim=s1, stage2_dim=0, normalize_input=True)
+    path = str(tmp_path / "bound_test.idx")
+    eng.save_index(path)
+    import struct
+    with open(path, "rb") as f:
+        f.read(8)  # magic
+        D, n, s1r, s2 = struct.unpack("iiii", f.read(16))
+        P1 = np.frombuffer(f.read(s1r * D * 4), dtype=np.float32).reshape(s1r, D)
+        pr1 = np.frombuffer(f.read(n * s1r * 4), dtype=np.float32).reshape(n, s1r)
+        f.read(s1r * 4)  # scale
+        e1 = np.frombuffer(f.read(n * 4), dtype=np.float32)
+        vn = np.frombuffer(f.read(n * 4), dtype=np.float32)
+        vn_eff = np.frombuffer(f.read(n * 4), dtype=np.float32)
+    return eng, (X, P1, pr1, e1, vn_eff)
+
+
+def test_bound_stage1_gpu_parity(tmp_path):
+    """Phase-2: the bound_stage1 GPU kernel must reproduce the CPU Stage-1 k1
+    survivor set (the O(N) scan), using the motor's real pr1_f_ projections.
+
+    The kernel computes UB(v,q) = <pr1[v],pq> + e1[v]*qr + eps and the same
+    sortable score the CPU nth_element uses, so the k1 set (the prefilter pool)
+    must be BIT-IDENTICAL to the CPU path. Skipped when no OpenCL GPU backend.
+    """
+    native = winnex_madhava._native
+    eng, (X, P1, pr1, e1, vn_eff) = _bound_engine_and_index(tmp_path)
+    N, s1 = pr1.shape
+    # A SpeedEngine GPU is the host for the bound_stage1 hook. The OpenCL
+    # loader is not on the standard path on every host; honor WINNEX_OPENCL_LIB
+    # (the engine's documented env var) so CI/hosts can point at their driver.
+    loader = os.environ.get("WINNEX_OPENCL_LIB", "")
+    try:
+        gpu_eng = native.SpeedEngine(
+            np.zeros((1, s1), dtype=np.float32), s1, 0, 0, 4, True, loader)
+    except RuntimeError:
+        pytest.skip("bound_stage1_gpu requires an OpenCL GPU backend")
+    if not gpu_eng.has_gpu():
+        pytest.skip("bound_stage1_gpu requires an OpenCL GPU backend")
+    cfg = eng.config()
+    k1 = max(cfg.k1_min, int(N * cfg.k1_fraction))
+
+    def k1_set(scores):
+        # CPU Stage-1: nth_element keeps the k1 SMALLEST scores (cosine: -ub).
+        # argpartition over the k1 smallest is the same set.
+        return set(np.argpartition(scores, k1)[:k1])
+
+    for idx in [0, 7, 100, 500, 1500, 2500]:
+        q = X[idx].astype(np.float32)
+        pq = (P1 @ q).astype(np.float32)                 # host projection
+        qr = float(np.sqrt(max(0.0, 1.0 - pq @ pq)))     # query residual
+        bias = np.array([[qr, 0.0, 1.0]], dtype=np.float32)  # qr, qm=0, ||q||^2=1
+        s_gpu = gpu_eng.bound_stage1_gpu(
+            pq.reshape(1, s1), pr1, e1, vn_eff, bias, 0)[0]
+        # CPU reference on the SAME real pr1/e1: ub = dot + e1*qr + eps, score=-ub.
+        ub = pr1 @ pq + e1 * qr + 1e-4
+        s_cpu = -ub
+        # Scores must match to float32 tolerance (the GPU kernel is the same math).
+        assert np.allclose(s_gpu, s_cpu, atol=1e-5), f"q{idx}: score mismatch"
+        assert k1_set(s_gpu) == k1_set(s_cpu), f"q{idx}: k1 survivor set diverged"
