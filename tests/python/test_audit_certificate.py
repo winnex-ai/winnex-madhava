@@ -161,3 +161,41 @@ def test_certificate_high_dim_nonunit_norm_query():
                 n_cons += 1
         assert n_viol == 0, f"{basis}: {n_viol} false-excluded docs in top-K"
         assert n_cons == len(Q), f"{basis}: consistency {n_cons}/{len(Q)}"
+
+
+def test_search_threadsafe_under_concurrency(cosine_engine):
+    """REGRESSION for the Fusion-B shared-state data race (1.9.12).
+
+    The 1.9.12 Fusion-B stored the Stage-1 UB in a `mutable` engine member
+    (`ub_scan_`) that the audit hook read AFTER the parallel scan. search() is
+    const, so concurrent calls on the SAME engine (search_batch's OpenMP, or
+    multi-threaded callers) raced on that buffer: query A's audit could read
+    query B's UB, corrupting pruned_by_bound / audit_ids nondeterministically.
+
+    Fix (2026-09-04): the UB buffer is now LOCAL to each search() call, so
+    concurrent searches are isolated. This test runs many queries in parallel
+    threads and asserts every result is bit-identical to its serial execution
+    (indices AND audit_ids AND pruned_by_bound). Under the old shared buffer,
+    a query whose audit overlapped another's scan would diverge from serial.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    rng = np.random.default_rng(123)
+    queries = rng.standard_normal((24, 128)).astype(np.float32)
+    queries /= np.linalg.norm(queries, axis=1, keepdims=True)
+
+    # Serial reference.
+    serial = [cosine_engine.search(q) for q in queries]
+
+    def run_one(q):
+        return cosine_engine.search(q)
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        parallel = list(ex.map(run_one, queries))
+
+    for i, (sr, pr) in enumerate(zip(serial, parallel)):
+        assert list(sr.indices) == list(pr.indices), f"indices diverged at {i}"
+        assert list(sr.audit_ids) == list(pr.audit_ids), f"audit_ids diverged at {i}"
+        assert sr.pruned_by_bound == pr.pruned_by_bound, \
+            f"pruned_by_bound diverged at {i}"
+        assert sr.recall_guarantee == pr.recall_guarantee, f"scope diverged at {i}"

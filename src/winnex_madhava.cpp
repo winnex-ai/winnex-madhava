@@ -896,17 +896,25 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
         for (int j = 0; j < s1; j++) qm1 += 0.5f * pr1_scale_[j] * std::fabs(pq1[j]);
     float qn2 = qn_eff * qn_eff;
 
-    // Stage-1: bound pruning over all N.
-    // FUSION (2026-09-04): esta passagem computa UB(v,q) para TODOS os N. O
-    // valor é GUARDADO em ub_scan_ (buffer reusado) para o audit hook reusar —
-    // eliminando a 2ª varredura O(N·s1) que recomputava ub_raw depois do top-K.
+    // Stage-1: bound pruning over all N. This pass computes UB(v,q) for all N
+    // and stores each value in ub_local (the per-query buffer below) so the
+    // audit hook can reuse it — the Fusion-B win (drop the second O(N·s1) pass
+    // that recomputed ub_raw after the top-K) WITHOUT any shared engine state.
     out.bound_pairs = N;
     std::vector<std::pair<float, int>> b1((size_t)N);
-    ub_scan_.resize((size_t)N);
+    // Per-query UB buffer (2026-09-04). The audit hook below needs the Stage-1
+    // UB of all N docs to certify exclusion against the global K-th threshold.
+    // This buffer is LOCAL to this call — not a shared mutable member — so
+    // concurrent search() calls on the same engine (search_batch / OpenMP /
+    // GPU, Phase 2) never race on it. Pre-sized + disjoint index writes are
+    // thread-safe under the parallel-for below. This keeps the Fusion-B
+    // compute win without the shared-state data race of the 1.9.12 mutable
+    // buffer.
+    std::vector<float> ub_local((size_t)N);
 #pragma omp parallel for
     for (int i = 0; i < N; i++) {
         float ub = ub_raw(i, 1, pq1, qr1, qm1);
-        ub_scan_[(size_t)i] = ub;   // FUSION: guarda p/ o audit reusar
+        ub_local[(size_t)i] = ub;   // disjoint index writes: thread-safe
         // Score for sorting:
         //   L2:    lb = ‖v‖² + ‖q‖² − 2·ub   (ascending = best)
         //   Cosine: ub (descending = best) — sort ascending on −ub
@@ -970,14 +978,15 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     //   - If modulation is on, rank by modulated = B1 + α(B2−B1)
     //   - Else rank by the (already computed) bound score.
     //
-    // FUSION A (2026-09-04): quando o postfilter roda SEM early_exit (o
-    // default), TODOS os k2 são re-pontuados por exact_score e o ranking final
-    // é por partial_sort do exact — a ORDEM do `ranked` (modulação) NÃO afeta o
-    // resultado. Então a modulação (que recomputa B1/B2 + varre e1_sum sobre N)
-    // é DESNECESSÁRIA: pulamos o bloco e usamos os survivors (ordem do bound)
-    // direto. O modulation_gain vira 0 (métrica — resultado idêntico). Só roda
-    // a modulação quando ela importa: postfilter=false (ranking por bound) OU
-    // early_exit=true (a ordem de avaliação afeta onde o early_exit para).
+    // FUSION A (2026-09-04): when the postfilter runs WITHOUT early_exit (the
+    // default), every k2 survivor is re-scored by exact_score and the final
+    // ranking is by partial_sort of the exact score — the `ranked` order from
+    // the modulation does NOT affect the result. So the modulation (which
+    // recomputes B1/B2 and sweeps e1_sum over N) is unnecessary: we skip the
+    // block and feed the survivors (bound order) straight through. The
+    // modulation_gain becomes 0 (a metric — the result is identical). The
+    // modulation only runs when it matters: postfilter=false (ranking by bound)
+    // OR early_exit=true (evaluation order affects where early_exit stops).
     const bool pf_eff_A = cfg_.postfilter || cfg_.audit_exhaustive;
     const bool ee_eff_A = cfg_.early_exit && !cfg_.audit_exhaustive;
     const bool modulation_needed = cfg_.modulation && s2 > 0
@@ -1191,10 +1200,10 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
 #pragma omp parallel for
             for (int i = 0; i < N; i++) {
                 const int t = wm_omp_thread_num();
-                // FUSION (2026-09-04): REUSA o UB já computado na passagem 1
-                // (ub_scan_), em vez de recomputar ub_raw — elimina a 2ª
-                // varredura O(N·s1). O ub é o MESMO (mesmos pq1/qr1/qm1).
-                float ub = ub_scan_[(size_t)i];
+                // (2026-09-04) Reuses the UB already computed in pass 1
+                // (ub_local, the per-query buffer) instead of recomputing
+                // ub_raw — the Fusion-B win, now without shared query state.
+                float ub = ub_local[(size_t)i];
                 float resid = e1_[i] * qr1;
                 if (is_l2) {
                     float lb = vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub;
@@ -1626,6 +1635,12 @@ AuditCommitment MadhavaL2::search_with_commitment(const float* query, int64_t k,
     float qn2 = qn_eff * qn_eff;
 
     // --- Count excluded + deterministic boundary-biased sample ---
+    // (2026-09-04) The search() call above uses a LOCAL UB buffer now (no
+    // shared mutable state), so this commitment cannot read the search's UB.
+    // The UB of each doc depends only on (pq1, qr1, qm1) — recomputed here —
+    // so we materialize the same per-query UB vector locally. Cost: one O(N)
+    // ub_raw pass (the same as search()'s Stage-1 scan); the commitment is an
+    // audit path, not the hot query path.
     // Deterministic PRNG: seed from the query hash + engine seed, so the
     // same query always yields the same sample (reproducible by an auditor).
     // We do NOT use a cryptographic RNG here — determinism is the goal.
@@ -1641,6 +1656,8 @@ AuditCommitment MadhavaL2::search_with_commitment(const float* query, int64_t k,
     const int64_t ms = std::max<int64_t>(0, max_sample);
     out.sampled_records.clear();
     out.sampled_records.reserve((size_t)std::min<int64_t>(ms, 4096));
+    std::vector<float> ub_local((size_t)N);
+    for (int i = 0; i < N; i++) ub_local[(size_t)i] = ub_raw(i, 1, pq1, qr1, qm1);
 
     // Two-tier deterministic sampling:
     //  (1) Boundary tier: docs whose bound is within `boundary_band` of the
@@ -1654,10 +1671,7 @@ AuditCommitment MadhavaL2::search_with_commitment(const float* query, int64_t k,
     // nearest the cut — the ones regulators spot-check.
     float band = 0.01f * (1.0f + std::fabs(worst));
     for (int i = 0; i < N; i++) {
-        // FUSION (2026-09-04): reusa o UB da passagem 1 (search() preencheu
-        // ub_scan_) em vez de recomputar ub_raw — o commitment chama search()
-        // logo acima, então ub_scan_ já está preenchido para ESTA query.
-        float ub = ub_scan_[(size_t)i];
+        float ub = ub_local[(size_t)i];   // UB materialized locally above
         bool excl;
         if (is_l2) {
             float lb = vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub;
@@ -1689,8 +1703,7 @@ AuditCommitment MadhavaL2::search_with_commitment(const float* query, int64_t k,
         std::vector<AuditSample> reservoir;
         reservoir.reserve((size_t)ms);
         for (int i = 0; i < N; i++) {
-            // FUSION (2026-09-04): reusa ub_scan_ (preenchido pelo search()).
-            float ub = ub_scan_[(size_t)i];
+            float ub = ub_local[(size_t)i];   // local UB (materialized above)
             bool excl;
             if (is_l2) {
                 float lb = vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub;
