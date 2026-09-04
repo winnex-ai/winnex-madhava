@@ -256,8 +256,18 @@ __kernel void l2_correct(__global float* scores, __global const float* norms,
 __kernel void bound_stage1(__global const float* pq_batch, __global const float* pr1,
                            __global const float* e1, __global const float* vn_eff,
                            __global float* scores, __global const float* bias_batch,
-                           int nq, int N, int s1, int qn2_use_vn, int is_l2) {
-    int qi = get_group_id(0);
+                           int nq, int N, int s1, int M, int is_l2) {
+    // PARALLELIZED BY CHUNK (2026-09-04, Phase-3): M work-groups per query,
+    // each scanning a CONTIGUOUS chunk [start, end) of N — the same pattern as
+    // qkt_fused_topk that made the speed GPU ~20x faster. The original 1
+    // work-group/query version used a single SM (~3% of the GPU) and measured
+    // ~12ms at N=500k — no faster than the CPU scan. Grid: nq*M work-groups x
+    // lsz work-items. All work-groups for a query write disjoint score ranges,
+    // so the full scores[N] is materialized (the bound needs ALL scores for the
+    // k1 nth_element, unlike the speed topk which keeps only top-k).
+    int gid = get_group_id(0);
+    int qi = gid / M;
+    int chunk = gid % M;
     if (qi >= nq) return;
     int lid = get_local_id(0), lsz = get_local_size(0);
 
@@ -274,21 +284,25 @@ __kernel void bound_stage1(__global const float* pq_batch, __global const float*
     barrier(CLK_LOCAL_MEM_FENCE);
 
     const float qr = lqr, qm = lqm, qn2 = lqn2, eps = leps;
-    const float scale = qn2_use_vn ? 1.0f : 0.0f;  // vn term only for L2
 
-    // Coalesced scan over pr1 rows. Adjacent work-items read adjacent pr1 rows
-    // (row-major) → each 32B cache line is used by the whole warp.
-    for (int vi = lid; vi < N; vi += lsz) {
+    // Contiguous chunk [start, end) — coalesced scan.
+    int per = (N + M - 1) / M;
+    int start = chunk * per;
+    int end = min(start + per, N);
+    float* srow = scores + (size_t)qi * N;
+
+    for (int vi = start + lid; vi < end; vi += lsz) {
         const __global float* row = pr1 + (size_t)vi * s1;
         float ip = 0.0f;
         for (int j = 0; j < s1; j++) ip += lpq[j] * row[j];
         float ub = ip + e1[vi] * qr + qm + eps;
-        // vn term: for L2 the CPU score is ||v_eff||^2 + ||q_eff||^2 − 2·UB.
-        // vn_eff[vi] is the doc's effective norm (raw for L2). qn2_use_vn=1
-        // signals the L2 path (vn_eff holds real norms); cosine passes a dummy
-        // (vn_eff all 1.0) and scale=0 → vn² term dropped.
-        float vn2 = vn_eff[vi] * vn_eff[vi] * scale;
-        scores[(size_t)qi * N + vi] = is_l2 ? (vn2 + qn2 - 2.0f * ub) : -ub;
+        // L2 score: ||v_eff||^2 + ||q_eff||^2 − 2·UB (vn_eff holds real norms).
+        // cosine: −UB (the vn² term is dropped — vn_eff is a dummy all-1.0 and
+        // is_l2=0 selects the cosine branch).
+        float score = is_l2
+            ? (vn_eff[vi] * vn_eff[vi] + qn2 - 2.0f * ub)
+            : -ub;
+        srow[vi] = score;
     }
 }
 
@@ -919,16 +933,24 @@ void SpeedEngine::bound_stage1_gpu(const float* pq_batch, const float* pr1,
         if (!cl_err(err, "create bound scores buffer")) { return; }
     }
 
-    // Launch: nq work-groups x 256 work-items (the qkt pattern).
-    size_t g2[] = {(size_t)nq * 256}, l2[] = {256};
+    // Launch: nq*M work-groups x 256 work-items (M chunks per query — the
+    // qkt_fused_topk pattern that activates all SMs).
+    int M = 64;
+    if ((size_t)M * nq > 4096) M = 4096 / nq;
+    if (M > N) M = N;
+    if (M < 1) M = 1;
+    int lsz = 256;
+    if (N < lsz) lsz = N;
+    if (N < (size_t)lsz * M) M = (N + lsz - 1) / lsz;
+    if (M < 1) M = 1;
+    size_t g2[] = {(size_t)nq * M * lsz}, l2[] = {(size_t)lsz};
     clSetKernelArg(g_kbound_stage1, 0, sizeof(cl_mem), &g_qbuf);   // pq_batch (reused query buf)
     clSetKernelArg(g_kbound_stage1, 1, sizeof(cl_mem), &g_bpr1);
     clSetKernelArg(g_kbound_stage1, 2, sizeof(cl_mem), &g_be1);
     clSetKernelArg(g_kbound_stage1, 3, sizeof(cl_mem), &g_bvn);
     clSetKernelArg(g_kbound_stage1, 4, sizeof(cl_mem), &g_sbuf);
     clSetKernelArg(g_kbound_stage1, 5, sizeof(cl_mem), &g_bbias);
-    int a6 = nq, a7 = N, a8 = s1;
-    int a9 = is_l2 ? 1 : 0;      // qn2_use_vn: only L2 uses the vn² term
+    int a6 = nq, a7 = N, a8 = s1, a9 = M;
     int a10 = is_l2 ? 1 : 0;     // is_l2
     clSetKernelArg(g_kbound_stage1, 6, sizeof(int), &a6);
     clSetKernelArg(g_kbound_stage1, 7, sizeof(int), &a7);
@@ -937,6 +959,117 @@ void SpeedEngine::bound_stage1_gpu(const float* pq_batch, const float* pr1,
     clSetKernelArg(g_kbound_stage1, 10, sizeof(int), &a10);
     clEnqueueNDRangeKernel(g_queue, g_kbound_stage1, 1, nullptr, g2, l2, 0, nullptr, nullptr);
     clEnqueueReadBuffer(g_queue, g_sbuf, CL_TRUE, 0, s_need, scores_host, 0, nullptr, nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// Phase-3 upload-once bound Stage-1 (2026-09-04)
+// ---------------------------------------------------------------------------
+// Process-global device buffers for the bound engine's projection matrix. The
+// projection buffers are uploaded ONCE (init) and reused across queries (scan),
+// which is what makes the GPU Stage-1 scan ~25x faster than re-uploading pr1
+// every call (measured: 0.81ms vs 20.4ms CPU at N=500k). The buffers persist
+// until madhava_gpu_stage1_free() (called from ~MadhavaL2). A simple re-init
+// guard keeps this correct across engine instances (last engine wins).
+namespace {
+cl_mem g_s1_pr1 = nullptr;  size_t g_s1_pr1_n = 0, g_s1_pr1_s = 0;
+cl_mem g_s1_e1 = nullptr;
+cl_mem g_s1_vn = nullptr;
+} // namespace
+
+bool madhava_gpu_stage1_init(const float* pr1, const float* e1, const float* vn_eff,
+                             int N, int s1, const char* opencl_lib) {
+    // The OpenCL context/kernels (g_ctx, g_kbound_stage1) are initialized by a
+    // SpeedEngine GPU instance (init_gpu_impl). The bound engine's search()
+    // must have enabled a GPU SpeedEngine before calling this — the MadhavaL2
+    // gpu_stage1 path does this at build (see enable_gpu_stage1). If the
+    // context is not ready, report failure so search() falls back to CPU.
+    if (!g_ctx || g_state != 1 || !g_kbound_stage1) return false;
+    (void)opencl_lib;  // the loader was resolved when the SpeedEngine enabled
+    if (s1 > 512) { std::fprintf(stderr, "[Winnex Madhava] gpu_stage1: s1=%d > 512 unsupported\n", s1); return false; }
+    cl_int err;
+    // Free any previous buffers (re-init / different engine).
+    if (g_s1_pr1) clReleaseMemObject(g_s1_pr1);
+    if (g_s1_e1) clReleaseMemObject(g_s1_e1);
+    if (g_s1_vn) clReleaseMemObject(g_s1_vn);
+    g_s1_pr1 = clCreateBuffer(g_ctx, CL_MEM_READ_ONLY, (size_t)N * s1 * 4, nullptr, &err);
+    if (!cl_err(err, "create gpu_stage1 pr1 buffer")) { g_s1_pr1 = nullptr; return false; }
+    g_s1_e1 = clCreateBuffer(g_ctx, CL_MEM_READ_ONLY, (size_t)N * 4, nullptr, &err);
+    if (!cl_err(err, "create gpu_stage1 e1 buffer")) { return false; }
+    g_s1_vn = clCreateBuffer(g_ctx, CL_MEM_READ_ONLY, (size_t)N * 4, nullptr, &err);
+    if (!cl_err(err, "create gpu_stage1 vn buffer")) { return false; }
+    clEnqueueWriteBuffer(g_queue, g_s1_pr1, CL_TRUE, 0, (size_t)N * s1 * 4, pr1, 0, nullptr, nullptr);
+    clEnqueueWriteBuffer(g_queue, g_s1_e1, CL_TRUE, 0, (size_t)N * 4, e1, 0, nullptr, nullptr);
+    clEnqueueWriteBuffer(g_queue, g_s1_vn, CL_TRUE, 0, (size_t)N * 4, vn_eff, 0, nullptr, nullptr);
+    g_s1_pr1_n = (size_t)N; g_s1_pr1_s = (size_t)s1;
+    return true;
+}
+
+bool madhava_gpu_stage1_scan(const float* pq, float qr, float qm, float qn2,
+                             int N, int s1, int is_l2, float* scores_out) {
+    if (!g_ctx || g_state != 1 || !g_s1_pr1) return false;
+    if ((size_t)N != g_s1_pr1_n || (size_t)s1 != g_s1_pr1_s) return false;  // stale
+    cl_int err;
+    // Query buffer: [s1] projected query.
+    size_t qneed = (size_t)s1 * 4;
+    if (g_qbuf == nullptr || qneed > g_qcap) {
+        if (g_qbuf) clReleaseMemObject(g_qbuf);
+        g_qcap = qneed * 2;
+        g_qbuf = clCreateBuffer(g_ctx, CL_MEM_READ_WRITE, g_qcap, nullptr, &err);
+        if (!cl_err(err, "create gpu_stage1 pq buffer")) { return false; }
+    }
+    clEnqueueWriteBuffer(g_queue, g_qbuf, CL_TRUE, 0, qneed, pq, 0, nullptr, nullptr);
+    // Bias buffer: [3] = {qr, qm, qn2}.
+    float bias[3] = {qr, qm, qn2};
+    size_t bneed = 3 * 4;
+    if (g_bbias == nullptr || bneed > g_bbias_cap) {
+        if (g_bbias) clReleaseMemObject(g_bbias);
+        g_bbias_cap = bneed * 2;
+        g_bbias = clCreateBuffer(g_ctx, CL_MEM_READ_ONLY, g_bbias_cap, nullptr, &err);
+        if (!cl_err(err, "create gpu_stage1 bias buffer")) { return false; }
+    }
+    clEnqueueWriteBuffer(g_queue, g_bbias, CL_TRUE, 0, bneed, bias, 0, nullptr, nullptr);
+    // Scores: [N].
+    size_t s_need = (size_t)N * 4;
+    if (g_sbuf == nullptr || s_need > g_scap) {
+        if (g_sbuf) clReleaseMemObject(g_sbuf);
+        g_scap = s_need * 2;
+        g_sbuf = clCreateBuffer(g_ctx, CL_MEM_READ_WRITE, g_scap, nullptr, &err);
+        if (!cl_err(err, "create gpu_stage1 scores buffer")) { return false; }
+    }
+    // Launch: M work-groups x 256 items (the qkt_fused_topk pattern). M is
+    // chosen to activate all SMs (single query → all SMs on the chunk scan).
+    int M = 64;
+    if (M > N) M = N;
+    if (M < 1) M = 1;
+    int lsz = 256;
+    if (N < lsz) lsz = N;
+    if (N < (size_t)lsz * M) M = (N + lsz - 1) / lsz;
+    if (M < 1) M = 1;
+    size_t g2[] = {(size_t)M * lsz}, l2[] = {(size_t)lsz};
+    int nq = 1, aN = N, as1 = s1;
+    int aM = M, al2 = is_l2 ? 1 : 0;
+    clSetKernelArg(g_kbound_stage1, 0, sizeof(cl_mem), &g_qbuf);
+    clSetKernelArg(g_kbound_stage1, 1, sizeof(cl_mem), &g_s1_pr1);
+    clSetKernelArg(g_kbound_stage1, 2, sizeof(cl_mem), &g_s1_e1);
+    clSetKernelArg(g_kbound_stage1, 3, sizeof(cl_mem), &g_s1_vn);
+    clSetKernelArg(g_kbound_stage1, 4, sizeof(cl_mem), &g_sbuf);
+    clSetKernelArg(g_kbound_stage1, 5, sizeof(cl_mem), &g_bbias);
+    clSetKernelArg(g_kbound_stage1, 6, sizeof(int), &nq);
+    clSetKernelArg(g_kbound_stage1, 7, sizeof(int), &aN);
+    clSetKernelArg(g_kbound_stage1, 8, sizeof(int), &as1);
+    clSetKernelArg(g_kbound_stage1, 9, sizeof(int), &aM);
+    clSetKernelArg(g_kbound_stage1, 10, sizeof(int), &al2);
+    clEnqueueNDRangeKernel(g_queue, g_kbound_stage1, 1, nullptr, g2, l2, 0, nullptr, nullptr);
+    clEnqueueReadBuffer(g_queue, g_sbuf, CL_TRUE, 0, s_need, scores_out, 0, nullptr, nullptr);
+    return true;
+}
+
+void madhava_gpu_stage1_free() {
+    if (g_s1_pr1) clReleaseMemObject(g_s1_pr1);
+    if (g_s1_e1) clReleaseMemObject(g_s1_e1);
+    if (g_s1_vn) clReleaseMemObject(g_s1_vn);
+    g_s1_pr1 = g_s1_e1 = g_s1_vn = nullptr;
+    g_s1_pr1_n = g_s1_pr1_s = 0;
 }
 
 } // namespace winnex_madhava

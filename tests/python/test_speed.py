@@ -163,3 +163,44 @@ def test_bound_stage1_gpu_parity(tmp_path):
         # Scores must match to float32 tolerance (the GPU kernel is the same math).
         assert np.allclose(s_gpu, s_cpu, atol=1e-5), f"q{idx}: score mismatch"
         assert k1_set(s_gpu) == k1_set(s_cpu), f"q{idx}: k1 survivor set diverged"
+
+
+def test_enable_gpu_stage1_search_parity(tmp_path):
+    """Phase-3: a bound engine with enable_gpu_stage1() active must return
+    BIT-IDENTICAL search results to the same engine on CPU — indices,
+    pruned_by_bound, audit_ids, recall_guarantee, bound_violations, k1.
+
+    The GPU Stage-1 scan computes the same ub_raw per doc (parity-validated in
+    test_bound_stage1_gpu_parity); the rest of search() (nth_element, stage-2,
+    postfilter, audit) is unchanged. Skipped when no OpenCL GPU backend.
+    """
+    import struct
+    rng = np.random.RandomState(7)
+    N, d, s1 = 6000, 96, 48
+    comp = rng.randn(12, d).astype(np.float32)
+    X = (rng.randn(N, 12).astype(np.float32) @ comp)
+    X /= np.linalg.norm(X, axis=1, keepdims=True)
+    eng_cpu = winnex_madhava.build_engine(
+        X, dim=d, k=10, metric="cosine", quant="none",
+        stage1_dim=s1, stage2_dim=0, normalize_input=True)
+    eng_gpu = winnex_madhava.build_engine(
+        X, dim=d, k=10, metric="cosine", quant="none",
+        stage1_dim=s1, stage2_dim=0, normalize_input=True)
+    loader = os.environ.get("WINNEX_OPENCL_LIB", "")
+    try:
+        enabled = eng_gpu.enable_gpu_stage1(loader)
+    except RuntimeError:
+        pytest.skip("enable_gpu_stage1 requires an OpenCL GPU backend")
+    if not enabled:
+        pytest.skip("enable_gpu_stage1 requires an OpenCL GPU backend")
+
+    for idx in [0, 7, 100, 500, 1500, 4000, 5999]:
+        q = X[idx].astype(np.float32)
+        rc = eng_cpu.search(q)
+        rg = eng_gpu.search(q)
+        assert list(rc.indices) == list(rg.indices), f"q{idx}: indices diverged"
+        assert rc.k1 == rg.k1, f"q{idx}: k1 diverged"
+        assert rc.pruned_by_bound == rg.pruned_by_bound, f"q{idx}: pbb diverged"
+        assert list(rc.audit_ids) == list(rg.audit_ids), f"q{idx}: audit diverged"
+        assert rc.recall_guarantee == rg.recall_guarantee, f"q{idx}: scope diverged"
+        assert rc.bound_violations == rg.bound_violations == 0, f"q{idx}: viol"

@@ -29,6 +29,7 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <mutex>
 
 namespace winnex_madhava {
 
@@ -421,6 +422,19 @@ public:
     double build_seconds() const { return build_s_; }
     bool built() const { return built_; }
 
+    // Phase-3 GPU Stage-1 (2026-09-04): enable the upload-once GPU scan of the
+    // Stage-1 bound (the O(N) hot loop) after the engine is built. Uploads
+    // pr1_f_/e1_/vn_eff_ to the device ONCE; subsequent search() calls run the
+    // Stage-1 scan on the GPU when this is active. opencl_lib selects the
+    // loader ("" = standard / WINNEX_OPENCL_LIB). Falls back silently to the
+    // CPU Stage-1 scan when the GPU is unavailable (returns false). The engine
+    // must be built (quant="none" — the float32 projection path) and must NOT
+    // be used concurrently with enable/disable. search() remains thread-safe:
+    // the GPU scan is serialized by an internal mutex and each call uses its
+    // own scores buffer.
+    bool enable_gpu_stage1(const std::string& opencl_lib = "");
+
+
     // UB Width diagnostics: the projection basis (orthonormal rows) and the
     // per-vector Cauchy-Schwarz residuals e(v) = sqrt(||v||^2 − ||P v||^2).
     // A small mean residual = the projection captures the manifold (tight
@@ -471,6 +485,19 @@ private:
     // thread-safe for CONCURRENT calls on the same engine (search_batch /
     // OpenMP / GPU). All per-query scratch (the Stage-1 UB vector for the audit
     // hook) is allocated LOCALLY inside search() — see src/winnex_madhava.cpp.
+
+    // Phase-3 GPU Stage-1 state (2026-09-04). `gpu_keepalive_` holds a
+    // SpeedEngine GPU instance alive so the process-global OpenCL context and
+    // the upload-once projection buffers (madhava_gpu_stage1_*) stay valid for
+    // the engine's lifetime. `gpu_mu_` serializes the per-query GPU scan (the
+    // OpenCL command queue is not safe for concurrent enqueue from multiple
+    // threads). `gpu_stage1_ready_` gates the GPU path in search(). These are
+    // mutable because search() is const; the mutex only guards the GPU enqueue,
+    // NOT any engine data (the engine is immutable after build), so concurrent
+    // search() calls remain correct (they serialize only on the short GPU op).
+    mutable std::mutex gpu_mu_;
+    mutable bool gpu_stage1_ready_ = false;
+    void* gpu_keepalive_ = nullptr;   // owns a SpeedEngine (keeps OpenCL alive)
 };
 
 // ---------------------------------------------------------------------------
@@ -483,6 +510,29 @@ std::vector<std::vector<int>> read_bigann_groundtruth(const std::string& path, i
 
 // Compute the L2² distance between a raw uint8 vector and a float query.
 float l2_sq(const uint8_t* v_raw, const float* q, int dim);
+
+// ---------------------------------------------------------------------------
+// Phase-3 GPU Stage-1 scan — upload-once helpers (2026-09-04)
+// ---------------------------------------------------------------------------
+// The bound engine's Stage-1 scan (UB over all N docs) is the O(N) hot loop.
+// These helpers run it on the GPU with the projection buffers uploaded ONCE
+// (init) and reused across queries (scan) — the upload-once pattern that makes
+// the GPU win real (~25x measured). Implemented in speed_opencl.cpp when
+// MADHAVA_HAS_OPENCL; CPU-only stubs in speed_cpu.cpp otherwise.
+//
+// init: uploads pr1 ([N x s1] float32, row-major) + e1 ([N] residuals) +
+//   vn_eff ([N] effective norms) to the device. Returns true on success.
+//   The buffers persist (process-global) until madhava_gpu_stage1_free().
+// scan: computes the Stage-1 sortable score for one projected query into
+//   scores_out ([N]): L2 = ||v_eff||^2 + ||q_eff||^2 − 2·UB; cosine = −UB,
+//   with UB = <pr1[v],pq> + e1[v]·qr + qm + eps. pq is the ALREADY-PROJECTED
+//   query ([s1]); qr/qm/qn2 are the query residual / int8 margin / ||q_eff||^2
+//   computed exactly as search() does. Returns true on success.
+bool madhava_gpu_stage1_init(const float* pr1, const float* e1, const float* vn_eff,
+                             int N, int s1, const char* opencl_lib);
+bool madhava_gpu_stage1_scan(const float* pq, float qr, float qm, float qn2,
+                             int N, int s1, int is_l2, float* scores_out);
+void madhava_gpu_stage1_free();
 
 } // namespace winnex_madhava
 

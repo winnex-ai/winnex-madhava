@@ -273,6 +273,15 @@ void SpeedEngine::bound_stage1_gpu(const float*, const float*, const float*,
                                    int, float*) const {
     // unreachable without a GPU backend
 }
+
+// Phase-3 upload-once stubs (defined in speed_opencl.cpp when MADHAVA_HAS_OPENCL).
+// These must return false / no-op when no GPU backend is present, so the bound
+// engine's search() cleanly falls back to the CPU Stage-1 scan.
+bool madhava_gpu_stage1_init(const float*, const float*, const float*,
+                             int, int, const char*) { return false; }
+bool madhava_gpu_stage1_scan(const float*, float, float, float,
+                             int, int, int, float*) { return false; }
+void madhava_gpu_stage1_free() {}
 #endif
 
 // --- Single-query search (CPU) --------------------------------------------

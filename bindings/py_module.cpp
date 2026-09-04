@@ -247,6 +247,11 @@ PYBIND11_MODULE(_winnex_madhava, m) {
         .def("config", &MadhavaL2::config)
         .def("build_seconds", &MadhavaL2::build_seconds)
         .def("built", &MadhavaL2::built)
+        .def("enable_gpu_stage1",
+             [](MadhavaL2& self, const std::string& opencl_lib) {
+                 return self.enable_gpu_stage1(opencl_lib);
+             },
+             py::arg("opencl_lib") = "")
         // UB Width diagnostics
         .def("basis1", [](const MadhavaL2& self) {
             int s = self.config().stage1_dim, D = self.dim();
@@ -379,4 +384,33 @@ PYBIND11_MODULE(_winnex_madhava, m) {
     m.def("ndcg_at_k", &ndcg_at_k, py::arg("result"), py::arg("gt_set"), py::arg("k"));
     m.def("l2_sq", &l2_sq, py::arg("v_raw"), py::arg("q"), py::arg("dim"));
     m.def("read_bigann_groundtruth", &read_bigann_groundtruth, py::arg("path"), py::arg("n_queries"));
+
+    // Phase-3 upload-once GPU Stage-1 scan (diagnostics + isolated measurement).
+    m.def("gpu_stage1_init",
+          [](py::array_t<float, py::array::c_style> pr1,
+             py::array_t<float, py::array::c_style> e1,
+             py::array_t<float, py::array::c_style> vn_eff,
+             int N, int s1, const std::string& loader) {
+              return madhava_gpu_stage1_init((const float*)pr1.request().ptr,
+                                             (const float*)e1.request().ptr,
+                                             (const float*)vn_eff.request().ptr,
+                                             N, s1, loader.c_str());
+          },
+          py::arg("pr1"), py::arg("e1"), py::arg("vn_eff"), py::arg("N"),
+          py::arg("s1"), py::arg("opencl_lib") = "")
+        .def("gpu_stage1_scan",
+          [](py::array_t<float, py::array::c_style> pq, float qr, float qm,
+             float qn2, int N, int s1, int is_l2) {
+              std::vector<float> scores((size_t)N);
+              bool ok = madhava_gpu_stage1_scan((const float*)pq.request().ptr,
+                                                qr, qm, qn2, N, s1, is_l2,
+                                                scores.data());
+              py::array_t<float> out((py::ssize_t)N);
+              auto oi = out.request();
+              if (ok) std::memcpy(oi.ptr, scores.data(), scores.size() * sizeof(float));
+              return py::make_tuple(ok, out);
+          },
+          py::arg("pq"), py::arg("qr"), py::arg("qm"), py::arg("qn2"),
+          py::arg("N"), py::arg("s1"), py::arg("is_l2"))
+        .def("gpu_stage1_free", []() { madhava_gpu_stage1_free(); });
 }

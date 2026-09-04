@@ -22,6 +22,7 @@
  * BSL 1.1 | pay@winnex.ai
  */
 #include "winnex_madhava/winnex_madhava.hpp"
+#include "winnex_madhava/speed_engine.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -538,6 +539,45 @@ MadhavaL2::~MadhavaL2() {
     delete[] vn_eff_;
     delete[] corpus_f32_;
     delete[] corpus_u8_owned_;
+    // Phase-3: release the GPU keepalive (frees the OpenCL context ref + the
+    // upload-once projection buffers).
+    if (gpu_keepalive_) {
+        SpeedEngine* se = static_cast<SpeedEngine*>(gpu_keepalive_);
+        delete se;
+        gpu_keepalive_ = nullptr;
+    }
+    gpu_stage1_ready_ = false;
+}
+
+// Phase-3 GPU Stage-1 enable (see header). Must run AFTER build (pr1_f_/e1_/
+// vn_eff_ exist). Constructs a keepalive SpeedEngine to bring up the OpenCL
+// context, then uploads the projection buffers once via madhava_gpu_stage1_init.
+bool MadhavaL2::enable_gpu_stage1(const std::string& opencl_lib) {
+    if (!built_ || !pr1_f_ || !e1_ || !vn_eff_) return false;
+    if (gpu_stage1_ready_) return true;   // already enabled
+    int s1 = cfg_.stage1_dim;
+    // Construct a minimal SpeedEngine GPU to initialize the process-global
+    // OpenCL context/kernels (init_gpu_impl). Its "corpus" is irrelevant (1x1);
+    // it only keeps the context alive (gpu_keepalive_).
+    try {
+        std::vector<float> dummy(1, 0.0f);
+        SpeedEngine* se = new SpeedEngine(dummy.data(), 1, 1,
+                                          Metric::Cosine, 0, 4, true, opencl_lib);
+        if (!se->has_gpu()) { delete se; return false; }
+        gpu_keepalive_ = se;
+    } catch (...) {
+        return false;
+    }
+    // Upload the projection buffers once.
+    bool ok = madhava_gpu_stage1_init(pr1_f_, e1_, vn_eff_, n_, s1,
+                                      opencl_lib.c_str());
+    if (!ok) {
+        delete static_cast<SpeedEngine*>(gpu_keepalive_);
+        gpu_keepalive_ = nullptr;
+        return false;
+    }
+    gpu_stage1_ready_ = true;
+    return true;
 }
 
 void MadhavaL2::build(const uint8_t* raw_base, int n) {
@@ -911,15 +951,48 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     // compute win without the shared-state data race of the 1.9.12 mutable
     // buffer.
     std::vector<float> ub_local((size_t)N);
+    // Phase-3 GPU Stage-1 (2026-09-04): when the upload-once GPU buffers are
+    // ready, run the O(N) bound scan on the GPU (madhava_gpu_stage1_scan) and
+    // materialize b1/ub_local from the returned sortable scores. The GPU
+    // computes the SAME ub_raw per doc (parity-validated), so the k1 survivor
+    // set and the audit are bit-identical to the CPU path. Serialized by the
+    // mutex (OpenCL queue is not thread-safe for concurrent enqueue); each call
+    // has its own scores buffer, so search() stays thread-safe.
+    bool gpu_scan = false;
+    if (gpu_stage1_ready_) {
+        std::lock_guard<std::mutex> lock(gpu_mu_);
+        std::vector<float> gpu_scores((size_t)N);
+        if (madhava_gpu_stage1_scan(pq1, qr1, qm1, qn2, N, s1, is_l2 ? 1 : 0,
+                                    gpu_scores.data())) {
+            // The GPU returned the SORTABLE scores (cosine: -ub; L2:
+            // vn²+qn2-2·ub). Recover ub for the audit and fill b1/ub_local.
+            // This fill must be PARALLEL (disjoint writes) — a serial loop over
+            // N here cost ~77ms at N=500k and wiped out the GPU scan win.
 #pragma omp parallel for
-    for (int i = 0; i < N; i++) {
-        float ub = ub_raw(i, 1, pq1, qr1, qm1);
-        ub_local[(size_t)i] = ub;   // disjoint index writes: thread-safe
-        // Score for sorting:
-        //   L2:    lb = ‖v‖² + ‖q‖² − 2·ub   (ascending = best)
-        //   Cosine: ub (descending = best) — sort ascending on −ub
-        float score = is_l2 ? (vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub) : -ub;
-        b1[i] = {score, i};
+            for (int i = 0; i < N; i++) {
+                float score = gpu_scores[(size_t)i];
+                //   cosine: score = -ub            → ub = -score
+                //   L2:     score = vn² + qn2 - 2·ub → ub = (vn² + qn2 - score)/2
+                float ub = is_l2
+                    ? (vn_eff_[i] * vn_eff_[i] + qn2 - score) * 0.5f
+                    : -score;
+                ub_local[(size_t)i] = ub;
+                b1[i] = {score, i};
+            }
+            gpu_scan = true;
+        }
+    }
+    if (!gpu_scan) {
+#pragma omp parallel for
+        for (int i = 0; i < N; i++) {
+            float ub = ub_raw(i, 1, pq1, qr1, qm1);
+            ub_local[(size_t)i] = ub;   // disjoint index writes: thread-safe
+            // Score for sorting:
+            //   L2:    lb = ‖v‖² + ‖q‖² − 2·ub   (ascending = best)
+            //   Cosine: ub (descending = best) — sort ascending on −ub
+            float score = is_l2 ? (vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub) : -ub;
+            b1[i] = {score, i};
+        }
     }
     // EXHAUSTIVE AUDIT (2026-09-03): audit_exhaustive forces the pool to cover
     // the ENTIRE corpus so the exact post-filter is global. We keep the b1
