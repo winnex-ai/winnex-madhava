@@ -76,12 +76,18 @@ def measure_rss_gb():
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024 / 1024  # MB -> GB
 
 
-def run_madhava(X, label):
-    """Build + search the madhava engine over X; return the honest numbers."""
+def run_madhava(X, label, basis="pca_corpus"):
+    """Build + search the madhava engine over X; return the honest numbers.
+
+    basis is a standard build_engine parameter (the motor is agnostic).
+    'random' is used for the FULL 100M: pca_corpus would materialize a 51 GB
+    float32 copy (OOM on 31 GB); random streams int8 — the documented
+    BigANN-100M path.
+    """
     N = len(X)
     t0 = time.time()
     eng = wm.build_engine(X, dim=DIM, metric="cosine", quant="int8",
-                          basis="pca_corpus", stage1_dim=64, stage2_dim=128,
+                          basis=basis, stage1_dim=64, stage2_dim=128,
                           k=K, normalize_input=True)
     build_s = time.time() - t0
     # recall vs the motor's OWN exact scan (valid ceiling)
@@ -169,7 +175,7 @@ results = {}
 
 # ---- Madhava FULL 100M (streaming, the memory-heavy claim) ----
 print("\n[4] Madhava 1.9.8 — FULL BigANN-100M (streaming, int8)", flush=True)
-results["madhava_100m"] = run_madhava(base_mm, "madhava-100M")
+results["madhava_100m"] = run_madhava(base_mm, "madhava-100M", basis="random")
 
 # ---- FAISS vs Madhava on 1M subset (side-by-side, same machine) ----
 print("\n[5] Side-by-side on 1M subset (FAISS vs Madhava)", flush=True)

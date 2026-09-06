@@ -109,7 +109,8 @@ struct Config {
     bool early_exit = false;   // stop exact scoring when the bound can't beat the current top-K
 
     // Parallelism
-    int n_threads = 0;        // 0 = use omp_get_max_threads()
+    int n_threads = 0;        // 0 = use omp_get_max_threads(); >0 caps the
+                              // OpenMP thread count (implemented 2026-09-06)
 
     // Audit hook: search() ALWAYS captures the per-document pruning decision
     // AT THE MOMENT it is made (audit_ids/audit_ubs/audit_threshold/
@@ -117,14 +118,6 @@ struct Config {
     // UNCONDITIONAL since 1.9.1. This is what makes search_audited a WITNESS
     // of the motor's exact decision, not a recomputing judge (there is NO
     // fallback that recomputes bounds — removed in 1.9.11).
-    //
-    // NOTE (2026-09-03, 1.9.11): `audit_record` is kept ONLY for API backward
-    // compatibility. It is NOT read by search() — the audit capture always
-    // runs and its O(N) cost is paid on every search (Gargalo #2, parallelized
-    // with OpenMP). Setting it to false does NOT disable the capture. To avoid
-    // the per-search O(N) audit scan entirely, callers must use a build without
-    // the hook (not currently exposed) — this flag is a no-op.
-    bool audit_record = false;
 
     // EXHAUSTIVE AUDIT MODE (2026-09-03): when true, search() FORCES the
     // post-filter pool to cover the ENTIRE corpus (k1 = k2 = N) and disables
@@ -204,8 +197,8 @@ struct SearchResult {
     //                      L2-lower-bound > audit_threshold (L2).
     //   audit_l2_lbs     — per-id the L2² lower bound (only for L2 metric).
     //   These fields make the audit a WITNESS, not a judge: the certificate
-    //   is byte-for-byte the motor's own pruning decision. Filled only when
-    //   the engine is configured with audit_record=true (see Config).
+    //   is byte-for-byte the motor's own pruning decision. Filled on every
+    //   search (the hook is unconditional since 1.9.1).
     double audit_threshold = 0.0;
     std::vector<int64_t> audit_ids;
     std::vector<float> audit_ubs;
@@ -360,15 +353,21 @@ public:
     void set_basis(const float* P1, const float* P2 = nullptr);
 
     // Search: bound pruning (top-k1/k2) + optional post-filter.
+    // collect_audit (internal, 2026-09-06): when false, the search still
+    // COUNTS the pruned_by_bound exclusions but does NOT materialize
+    // audit_ids/audit_ubs (the per-doc certificate) — the ~O(N) collection
+    // cost is skipped. Callers that only need the top-K (search_batch, the
+    // public search) pass false; callers that need the per-doc proof
+    // (search_audited, search_with_commitment) use the default true.
+    SearchResult search(const float* query, const std::vector<float>& query_norm,
+                        bool collect_audit) const;
+    // Public 2-arg search (collects the audit — backward compatible).
     SearchResult search(const float* query, const std::vector<float>& query_norm) const;
     SearchResult search(const float* query) const; // computes norm internally
 
-    // Search with the audit hook (the witness path). NOTE (2026-09-03, 1.9.11):
-    // the normal search() ALREADY captures the per-document pruning decision
-    // unconditionally (the hook is not gated by cfg_.audit_record, which is a
-    // no-op kept for API compatibility). search_with_audit is retained as an
-    // explicit alias for clarity.
-    SearchResult search_with_audit(const float* query) const;
+    // Search with the audit hook (the witness path). The normal search()
+    // ALREADY captures the per-document pruning decision unconditionally (the
+    // hook is unconditional since 1.9.1).
 
     // M1 (v1.8.0): batch search — processa nq queries de uma vez.
     // Útil para o DevAI (batch RAG) e para a ingestão: evita o overhead de
@@ -507,9 +506,6 @@ private:
 // then per query: dim ids int32 + dim dists float32).
 // Returns gt[query_index][neighbor_slot] = dataset id.
 std::vector<std::vector<int>> read_bigann_groundtruth(const std::string& path, int n_queries);
-
-// Compute the L2² distance between a raw uint8 vector and a float query.
-float l2_sq(const uint8_t* v_raw, const float* q, int dim);
 
 // ---------------------------------------------------------------------------
 // Phase-3 GPU Stage-1 scan — upload-once helpers (2026-09-04)

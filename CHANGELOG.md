@@ -5,6 +5,20 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.15] — 2026-09-06
+
+### Changed: code cleanup and optimization
+
+- Removed dead/no-op configuration and API surface (`audit_record` no-op flag,
+  orphan `search_with_audit` declaration, duplicated `l2_sq` binding, unused
+  `MadHybrid`/`hybrid=True` wrapper and its test module).
+- Implemented the previously inert `n_threads` knob: it now caps the OpenMP
+  thread count used by the parallel regions.
+- `search()`/`search_batch()` skip materializing the per-doc audit certificate
+  (`audit_ids`/`audit_ubs`) when the caller only needs the top-K; the
+  certificate paths (`search_audited`, `search_with_commitment`) still request
+  it explicitly. Public behavior and guarantees unchanged (tests pass).
+
 ## [1.9.14] — 2026-09-06
 
 ### Changed: `search_with_commitment` derives the commitment from the search's own audit hook

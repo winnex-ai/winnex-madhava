@@ -63,7 +63,6 @@ PYBIND11_MODULE(_winnex_madhava, m) {
         .def_readwrite("normalize_input", &Config::normalize_input)
         .def_readwrite("early_exit", &Config::early_exit)
         .def_readwrite("n_threads", &Config::n_threads)
-        .def_readwrite("audit_record", &Config::audit_record)
         .def_readwrite("audit_exhaustive", &Config::audit_exhaustive)
         .def_readwrite("scan_int8", &Config::scan_int8);
 
@@ -143,7 +142,12 @@ PYBIND11_MODULE(_winnex_madhava, m) {
                  auto info = q.request();
                  if (info.ndim != 1 || (int)info.shape[0] != self.dim())
                      throw std::runtime_error("query must be float32 of length dim");
-                 return self.search((const float*)info.ptr);
+                 // Public search returns only the top-K. Skip the per-doc
+                 // audit certificate collection (audit_ids/audit_ubs) — that
+                 // ~O(N) cost is paid only by search_audited/commitment, which
+                 // request it explicitly (2026-09-06).
+                 return self.search((const float*)info.ptr, std::vector<float>(),
+                                    /*collect_audit=*/false);
              },
              py::arg("query"))
         .def("search_exact",
@@ -382,7 +386,6 @@ PYBIND11_MODULE(_winnex_madhava, m) {
 
     m.def("recall_at_k", &recall_at_k, py::arg("result"), py::arg("gt_set"), py::arg("k"));
     m.def("ndcg_at_k", &ndcg_at_k, py::arg("result"), py::arg("gt_set"), py::arg("k"));
-    m.def("l2_sq", &l2_sq, py::arg("v_raw"), py::arg("q"), py::arg("dim"));
     m.def("read_bigann_groundtruth", &read_bigann_groundtruth, py::arg("path"), py::arg("n_queries"));
 
     // Phase-3 upload-once GPU Stage-1 scan (diagnostics + isolated measurement).

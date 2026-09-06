@@ -96,42 +96,6 @@ print(result.bound_violations)         # always 0 — the guarantee
 
 That's it. Same query + same data → same result, every time. Deterministic.
 
-## Hybrid mode (MadHybrid) — sublinear query, same engine
-
-The **same engine** can run in `hybrid` mode: the corpus is clustered into
-`nlist` cells, a query is routed to the `nprobe` most-similar cells, and each
-cell runs the identical bounded engine. This makes query cost sublinear
-(`nprobe × cell_size` instead of `N`) while keeping the bound guarantee.
-
-```python
-import winnex_madhava, numpy as np
-
-# float32 embeddings (cosine) — the MadHybrid path
-embeddings = np.random.randn(50_000, 128).astype(np.float32)
-embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
-eng = winnex_madhava.build_engine(
-    embeddings, k=10, hybrid=True, nlist=64, nprobe=5, metric="cosine",
-)
-res = eng.search(embeddings[0].astype(np.float32), k=10)
-print(res.indices)
-
-# uint8 raw bytes (L2, BIGANN-style) — native C++ per cell
-u8 = (embeddings * 100 + 128).astype(np.uint8)
-eng_u = winnex_madhava.build_engine(
-    u8, k=10, hybrid=True, nlist=64, nprobe=5, metric="l2",
-)
-```
-
-**Corpus type** is auto-detected: float32 → pure-Python bound cell (the
-validated MadHybrid path from the News-210K benchmark); uint8 → native C++
-`MadhavaL2` per cell. Switch between `default` and `hybrid` with a single
-flag — the motor is identical.
-
-**Honest positioning**: hybrid trades recall for speed (like any IVF index).
-On structured data (e.g. news categories), recall@10 ≈ 1.0 at `nprobe=3–8`;
-on uniform data, use `default` mode. `hybrid` is ideal for large, clustered
-corpora and streaming/rebuild-heavy workloads.
-
 ## When should you use this?
 
 `winnex-madhava` is for the cases where **"fast but unprovable" is a liability**.
@@ -160,8 +124,8 @@ Be honest — `winnex-madhava` is **not** the right tool for:
 - **`default` mode with arbitrary float32 corpora.** The `default` engine
   input contract is **uint8** (0–255). If you pass raw float embeddings to
   `default` mode, they get truncated to uint8 and recall collapses. For
-  float32 embeddings, use **`hybrid=True`** (the MadHybrid path) or
-  **`speed=True`** (the exact GPU scan), which accept float32 directly.
+  float32 embeddings, use **`speed=True`** (the exact GPU scan), which
+  accepts float32 directly.
 - **Tiny / low-dimensional corpora** (d < ~8). The projection overhead
   dominates; a plain `search_exact` scan is faster and simpler.
 - **GPU inference for other models.** The speed-mode GPU path (OpenCL) is
@@ -175,7 +139,7 @@ you need.
 
 ```python
 engine = winnex_madhava.build_engine(
-    corpus,                          # (n, dim) uint8 (default) OR float32 (hybrid)
+    corpus,                          # (n, dim) uint8 (default) OR float32 (speed)
     dim=128,                         # vector dimensionality (default: corpus.shape[1])
     metric="cosine",                 # "cosine" (normalized embeddings) or "l2" (raw uint8)
     quant="int8",                    # "int8" (fast, memory-light) or "none" (float32 exact)
@@ -188,10 +152,6 @@ engine = winnex_madhava.build_engine(
     postfilter=True,                 # exact metric re-score on survivors
     normalize_input=True,            # L2-normalize vectors (used when metric="cosine")
     seed=42,                         # PRNG seed for the MGS projections (deterministic)
-    # Hybrid (MadHybrid) — same engine, clustered for sublinear query
-    hybrid=False,                    # True = clustered sublinear mode; False = full scan
-    nlist=64,                        # cells (clusters) in hybrid mode
-    nprobe=5,                        # cells probed per query (recall/speed trade-off)
 )
 ```
 
@@ -229,24 +189,6 @@ Set `False` to rank purely by the bound.
 When `True`, the exact metric is re-computed on the surviving top-k2, so the
 final result is the **true top-K of the surviving set**. This closes the gap
 between bound ranking and exact ranking. Leave it on unless you need speed.
-
-### Choosing `hybrid` / `nlist` / `nprobe`
-
-| Parameter | Default | Effect |
-|---|---|---|
-| `hybrid` | `False` | `True` → clustered MadHybrid mode (sublinear query); `False` → full bound scan |
-| `nlist` | `64` | Number of cells (clusters) in hybrid mode |
-| `nprobe` | `5` | Cells probed per query. Higher = better recall, more latency |
-
-In hybrid mode the corpus is partitioned into `nlist` cells via
-MiniBatchKMeans; a query is routed to the `nprobe` most-similar cells, and
-each cell runs the identical bounded engine. Results are merged globally by
-exact similarity. **Corpus type is auto-detected**: float32 embeddings →
-pure-Python bound cells (cosine); uint8 raw bytes → native C++ per cell (L2).
-
-Trade-off: higher `nprobe` recovers more recall at more latency. On
-structured data (e.g. news categories), `nprobe=3–5` reaches near-exact
-recall; on uniform data, prefer `default` mode.
 
 ### Choosing `speed` / `speed_n_anchors` / `speed_nprobe`
 
@@ -344,8 +286,7 @@ The GPU path (OpenCL) runs the QKᵀ matmul as a **single fused kernel**
 **Latency guidance.** Use `speed=True` with `metric="l2"` (or `"cosine"`) for
 an **exact scan** on GPU — the fastest correct path per query. For **throughput
 (batch)**, `search_batch` amortizes the kernel launch; at 1M it sustains
-~600-640 QPS. If you need sub-millisecond latency on CPU, use `hybrid=True`
-(approximate, recall tunable via `nprobe`) — see the honest comparison below.
+~600-640 QPS.
 
 ## Streaming — 100M vectors without loading the corpus into RAM
 
@@ -414,11 +355,10 @@ corpus is **never** loaded into RAM. **0 bound violations** at every scale.
 
 ## API
 
-### `winnex_madhava.build_engine(corpus, **kwargs) -> MadhavaL2 | MadHybrid | MadhavaSpeed`
+### `winnex_madhava.build_engine(corpus, **kwargs) -> MadhavaL2 | MadhavaSpeed`
 
-Build an engine over a `(n, dim)` array. With `hybrid=False` (default) the
-corpus is uint8 and the native C++ `MadhavaL2` is returned. With
-`hybrid=True` a `MadHybrid` wrapper is returned (float32 or uint8). With
+Build an engine over a `(n, dim)` array. With the default (uint8) corpus the
+native C++ `MadhavaL2` is returned. With
 `speed=True` a `MadhavaSpeed` is returned — the native QKᵀ matmul engine with
 **fused topk** (OpenCL GPU default, CUDA opt-in at build, OpenMP/AVX2 on CPU),
 optionally with O(K) anchor navigation via `speed_n_anchors`/`speed_nprobe`.
@@ -780,41 +720,6 @@ exact-scan ceiling on the same subset):**
   IVF-PQ 47.8% — they are faster (sub-ms) but *not* provably complete.
 - `bound_violations == 0` is the per-document Cauchy-Schwarz guarantee.
 
-### Hybrid benchmark (News 210K, v1.3.0)
-
-The `winnex-madhava` hybrid mode (MadHybrid) benchmark — same engine,
-`default` and `hybrid`, compared against HNSW / IVF / IVF-PQ on real News
-Category data (209,527 articles, 42 categories, SBERT 384D float32):
-
-[![Kaggle](https://img.shields.io/badge/Kaggle-MadHybrid%20vs%20HNSW%2FIVF%2FIVF--PQ-20BEFF?logo=kaggle)](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-hybrid-vs-hnsw-ivf-ivf-pq)
-
-| Method | NDCG@10 | Recall@10 | Lat (ms) | QPS | Build |
-|---|---|---|---|---|---|
-| FlatIP (exact) | 0.5960 | 0.5250 | 32.3 | 31 | N/A |
-| HNSW(ef=32) | 0.5960 | 0.5250 | 0.51 | 1962 | **180.8 s** |
-| HNSW(ef=256) | 0.5960 | 0.5250 | 2.17 | 461 | 180.8 s |
-| IVF(nprobe=5) | 0.5878 | 0.5170 | 0.85 | 1176 | <1 min |
-| IVF-PQ(m=8) | 0.5212 | 0.4610 | 3.18 | 315 | 9.1 s |
-| **Madhava default (u8/L2)** | 0.4212 | 0.3805 | 16.9 | 59 | **3.4 s** |
-| **MadHybrid(np=3)** | 0.5939 | **0.5270** | 5.17 | 193 | **12.9 s** |
-| **MadHybrid(np=5)** | **0.5983** | **0.5295** | 8.0 | 125 | **13.0 s** |
-
-**Read the honest insight**: MadHybrid's edge is **not raw recall** (plain
-IVF wins at low nprobe). Its edge is **build speed + bound guarantee**:
-14× faster build than HNSW, zero bound violations (mathematical proof per
-exclusion), per-minute index rebuild for streaming data, and deterministic
-results. The `winnex-madhava` hybrid mode reaches the same NDCG@10 as the
-exact FlatIP baseline while running 4× faster per query.
-
-Related public benchmarks:
-- [winnex-madhava-1-7-real-benchmark-vs-hnsw-ivf-pq](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-real-benchmark-vs-hnsw-ivf-pq) — **real benchmark (current)**: pip-installed wheel, exact-scan local ceiling (valid reference), vs HNSW/IVF/IVF-PQ, GT-validity documented
-- [winnex-madhava-1-7-honest-10m-gpu-vs-official-gt](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-honest-10m-gpu-vs-official-gt) — ⚠️ **superseded**: used the GT file that proved invalid for the reordered base (documented in the real benchmark)
-- [winnex-madhava-1-7-honest-gpu-vs-official-gt](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-1-7-honest-gpu-vs-official-gt) — ⚠️ **superseded**: same GT-validity caveat
-- [winnex-madhava-pip-200-queries](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-200-queries) — official L2 GT, 200 queries, 10M/100M
-- [winnex-madhava-faiss-benchmark](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-faiss-benchmark) — side-by-side with FAISS HNSW/IVF/IVF-PQ
-- [winnex-madhava-hybrid-vs-hnsw-ivf-ivf-pq](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-hybrid-vs-hnsw-ivf-ivf-pq) — hybrid (MadHybrid) vs HNSW/IVF/IVF-PQ on News 210K
-- [winnex-madhava-speed-gpu-vs-hnsw-ivf-ivf-pq-bigann](https://www.kaggle.com/code/kleniopadilha/winnex-madhava-speed-gpu-vs-hnsw-ivf-ivf-pq-bigann) — speed mode (native C++, O(K) anchors) vs HNSW/IVF/IVF-PQ on BIGANN-100M
-
 ### Speed benchmark (BIGANN-100M, v1.6.0) — historical
 
 > **Historical note.** This v1.6.0 benchmark reports **efficiency vs the subset's
@@ -867,7 +772,7 @@ We are explicit about what winnex-madhava **does not** do. Most "surprising"
 behavior below is by design — the engine is optimized for a specific input
 domain, and using it outside that domain silently degrades quality.
 
-### Input: `default` needs uint8; `hybrid` accepts float32
+### Input: `default` (uint8) vs `speed` (float32)
 
 **`default` mode** treats every corpus vector as **uint8 bytes** (`np.uint8`),
 values 0–255. This is the BIGANN-style quantized format the math assumes.
@@ -877,27 +782,17 @@ values 0–255. This is the BIGANN-style quantized format the math assumes.
 corpus = np.random.randint(0, 256, size=(10_000, 128), dtype=np.uint8)
 engine = winnex_madhava.build_engine(corpus, dim=128, k=10)
 query  = corpus[0].astype(np.float32)     # float32 *of the uint8 values*
-
-# ❌ Wrong in default mode — silently gives poor recall
-corpus = np.random.randn(10_000, 128).astype(np.float32)   # floats ~0
-engine = winnex_madhava.build_engine(corpus, dim=128, k=10)    # truncated to uint8!
 ```
 
-If you pass a `float32` corpus to `default` mode, `build_engine` **truncates**
-it to `uint8` via `astype(np.uint8)` — values like `0.09` become `0`, `3.44`
-becomes `3`. The engine will still run and report `bound_violations == 0`,
-but the recall can collapse.
-
-**For float32 embeddings (cosine), use `hybrid=True`** — the MadHybrid path
-accepts float32 directly and routes the query to clustered cells, avoiding
-the uint8 truncation:
+**For float32 embeddings (cosine)**, pass them directly — `build_engine`
+routes float32 corpora to the native float32 bound path (no uint8 truncation),
+or use `speed=True` for the exact GPU scan:
 
 ```python
-# ✅ Correct for float32 embeddings (hybrid mode)
+# ✅ Correct for float32 embeddings
 embeddings = np.random.randn(10_000, 128).astype(np.float32)
 embeddings /= np.linalg.norm(embeddings, axis=1, keepdims=True)
 engine = winnex_madhava.build_engine(embeddings, dim=128, k=10,
-                                     hybrid=True, nlist=64, nprobe=5,
                                      metric="cosine")
 ```
 
@@ -987,7 +882,6 @@ We are explicit about where winnex-madhava **does not** win:
 | **Provable completeness** | **winnex-madhava** | Only engine with 0 bound violations + per-doc proof |
 | Frequent index rebuilds | **winnex-madhava** | Build ≈ 1 s (10M) vs HNSW ≈ 1025 s |
 | Regulated / auditable retrieval | **winnex-madhava** | Deterministic, per-document audit trail |
-| Sublinear query on clustered corpora | **winnex-madhava hybrid** | MadHybrid: nprobe×cell query, 14× faster build than HNSW, bound guarantee |
 
 **If you need raw speed, use HNSW — it is excellent.** winnex-madhava is for the
 regions where "fast but unprovable" is a liability: legal discovery, medical

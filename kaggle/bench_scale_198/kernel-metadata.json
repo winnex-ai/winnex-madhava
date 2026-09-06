@@ -5,7 +5,7 @@
   "code_file": "winnex-madhava-1-9-8-scale-honest.py",
   "language": "python",
   "kernel_type": "script",
-  "is_private": true,
+  "is_private": false,
   "enable_gpu": true,
   "enable_internet": true,
   "model_strategy": "none",

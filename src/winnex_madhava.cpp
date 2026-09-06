@@ -52,6 +52,17 @@ inline int wm_omp_max_threads() {
 #endif
 }
 
+// Effective OpenMP thread count for a search/build: respects Config.n_threads
+// (>0 caps the count) and falls back to the OpenMP maximum (0 = default).
+// Used to size per-thread buffers AND as num_threads(...) on the parallel
+// regions, so a caller can bound CPU usage without touching the process-global
+// OpenMP setting (search() may run concurrently via search_batch).
+inline int wm_effective_threads(int configured) {
+    int max_t = wm_omp_max_threads();
+    if (configured > 0) return std::max(1, std::min(configured, max_t));
+    return max_t;
+}
+
 inline int wm_omp_thread_num() {
 #ifdef _OPENMP
     return omp_get_thread_num();
@@ -365,15 +376,6 @@ double ndcg_at_k(const std::vector<int>& result, const std::vector<int>& gt_set,
 // ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------
-float l2_sq(const uint8_t* v_raw, const float* q, int dim) {
-    float s = 0;
-    for (int j = 0; j < dim; j++) {
-        float d = (float)v_raw[j] - q[j];
-        s += d * d;
-    }
-    return s;
-}
-
 std::vector<std::vector<int>> read_bigann_groundtruth(const std::string& path, int n_queries) {
     std::vector<std::vector<int>> gt;
     FILE* f = fopen(path.c_str(), "rb");
@@ -751,7 +753,7 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
                 vn_eff_[p + i] = normalize ? 1.0f : raw_norm;
             }
         }
-#pragma omp parallel for
+#pragma omp parallel for num_threads(wm_effective_threads(cfg_.n_threads))
         for (int i = 0; i < nt; i++) {
             int id = p + i;
             float* v = ch.data() + (size_t)i * D;
@@ -898,7 +900,8 @@ float MadhavaL2::exact_score(int idx, const float* q) const {
     }
 }
 
-SearchResult MadhavaL2::search(const float* query, const std::vector<float>& query_norm) const {
+SearchResult MadhavaL2::search(const float* query, const std::vector<float>& query_norm,
+                               bool collect_audit) const {
     SearchResult out;
     if (!built_) return out;
     int N = n_, D = cfg_.dim, s1 = cfg_.stage1_dim, s2 = cfg_.stage2_dim, K = cfg_.k;
@@ -968,7 +971,7 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
             // vn²+qn2-2·ub). Recover ub for the audit and fill b1/ub_local.
             // This fill must be PARALLEL (disjoint writes) — a serial loop over
             // N here cost ~77ms at N=500k and wiped out the GPU scan win.
-#pragma omp parallel for
+#pragma omp parallel for num_threads(wm_effective_threads(cfg_.n_threads))
             for (int i = 0; i < N; i++) {
                 float score = gpu_scores[(size_t)i];
                 //   cosine: score = -ub            → ub = -score
@@ -983,7 +986,7 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
         }
     }
     if (!gpu_scan) {
-#pragma omp parallel for
+#pragma omp parallel for num_threads(wm_effective_threads(cfg_.n_threads))
         for (int i = 0; i < N; i++) {
             float ub = ub_raw(i, 1, pq1, qr1, qm1);
             ub_local[(size_t)i] = ub;   // disjoint index writes: thread-safe
@@ -1023,7 +1026,7 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
             for (int j = 0; j < s2; j++) qm2 += 0.5f * pr2_scale_[j] * std::fabs(pq2[j]);
 
         b2.resize((size_t)k1);
-#pragma omp parallel for
+#pragma omp parallel for num_threads(wm_effective_threads(cfg_.n_threads))
         for (int i = 0; i < k1; i++) {
             int vi = b1[i].second;
             float ub2 = ub_raw(vi, 2, pq2, qr2, qm2);
@@ -1087,7 +1090,7 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
         for (int i = 0; i < N; i++) e1_sum += e1_[i];
         float mu = (float)(e1_sum / std::max(N, 1));
 
-#pragma omp parallel for reduction(+:mod_gain)
+#pragma omp parallel for reduction(+:mod_gain) num_threads(wm_effective_threads(cfg_.n_threads))
         for (int i = 0; i < k2; i++) {
             int vi = survivors->at(i).second;
             float B1 = ub_raw(vi, 1, pq1m, qr1m, qm1m);
@@ -1167,7 +1170,7 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
                 }
             }
         } else {
-#pragma omp parallel for
+#pragma omp parallel for num_threads(wm_effective_threads(cfg_.n_threads))
             for (int i = 0; i < k2; i++) {
                 int vi = ranked[i].second;
                 float score = exact_score(vi, query);
@@ -1253,24 +1256,26 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     if ((int)out.indices.size() >= K && K > 0) {
         float worst = exact_score(out.indices[K - 1], query);  // GLOBAL K-th
         out.audit_threshold = worst;
-        out.audit_ids.reserve(std::min(N, 4096));
-        out.audit_ubs.reserve(std::min(N, 4096));
-        out.audit_residuals.reserve(std::min(N, 4096));
-        if (is_l2) out.audit_l2_lbs.reserve(std::min(N, 4096));
-        // Parallel O(N) bound scan (Gargalo #2): the audit hook runs on EVERY
-        // search, so this loop must not serialize the query path. Each thread
-        // keeps its own buffers (ub_raw/query projections are read-only and
-        // thread-safe after build); the per-thread lists are concatenated in
-        // thread order, preserving the deterministic ascending doc_id order.
+        // Parallel O(N) bound scan (the audit hook). Reuses the UB already
+        // computed in pass 1 (ub_local, the Fusion-B win). When collect_audit
+        // is FALSE (2026-09-06), the search still COUNTS the exclusions
+        // (pruned_by_bound stays exact) but does NOT materialize
+        // audit_ids/audit_ubs/residuals — the per-doc certificate collection,
+        // which can be ~N push_backs per query (measured ~12ms at N=500k on a
+        // strong manifold), is skipped for callers that only need the top-K.
         long long pruned = 0;
-        {
-            const int nthreads = std::max(1, wm_omp_max_threads());
+        if (collect_audit) {
+            const int nthreads = std::max(1, wm_effective_threads(cfg_.n_threads));
+            out.audit_ids.reserve(std::min(N, 4096));
+            out.audit_ubs.reserve(std::min(N, 4096));
+            out.audit_residuals.reserve(std::min(N, 4096));
+            if (is_l2) out.audit_l2_lbs.reserve(std::min(N, 4096));
             std::vector<std::vector<int>> t_ids(nthreads);
             std::vector<std::vector<float>> t_ubs(nthreads);
             std::vector<std::vector<float>> t_res(nthreads);
             std::vector<std::vector<float>> t_lbs(nthreads);
             std::vector<long long> t_count(nthreads, 0);
-#pragma omp parallel for
+#pragma omp parallel for num_threads(nthreads)
             for (int i = 0; i < N; i++) {
                 const int t = wm_omp_thread_num();
                 // (2026-09-04) Reuses the UB already computed in pass 1
@@ -1308,8 +1313,25 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
                     out.audit_l2_lbs.insert(out.audit_l2_lbs.end(),
                                             t_lbs[t].begin(), t_lbs[t].end());
             }
+            out.pruned_by_bound = pruned;
+        } else {
+            // collect_audit=false: count the exclusions only (pruned_by_bound
+            // stays exact) without materializing the per-doc certificate.
+            // Parallel count over N (reuses ub_local; no per-thread lists).
+            long long local_pruned = 0;
+#pragma omp parallel for reduction(+:local_pruned) num_threads(wm_effective_threads(cfg_.n_threads))
+            for (int i = 0; i < N; i++) {
+                float ub = ub_local[(size_t)i];
+                if (is_l2) {
+                    float lb = vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub;
+                    if (lb > worst) local_pruned++;
+                } else {
+                    if (ub < worst) local_pruned++;
+                }
+            }
+            pruned = local_pruned;
+            out.pruned_by_bound = pruned;
         }
-        out.pruned_by_bound = pruned;
     }
     // prefilter = what the fixed cutoff discarded WITHOUT a certificate.
     // Clamp: n_exact and pruned_by_bound are not disjoint.
@@ -1318,6 +1340,14 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
 
     out.latency_ms = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - t0).count();
     return out;
+}
+
+// Public 2-arg search: collects the audit (backward compatible — the audit
+// hook was unconditional and search_audited/commitment call this and rely on
+// audit_ids being materialized).
+SearchResult MadhavaL2::search(const float* query,
+                               const std::vector<float>& query_norm) const {
+    return search(query, query_norm, /*collect_audit=*/true);
 }
 
 SearchResult MadhavaL2::search(const float* query) const {
@@ -1333,9 +1363,14 @@ std::vector<int> MadhavaL2::search_batch(const float* queries, int nq, int k) co
     std::vector<int> all;
     if (!built_ || nq <= 0 || k <= 0) return all;
     all.resize((size_t)nq * k);
-#pragma omp parallel for schedule(dynamic)
+#pragma omp parallel for schedule(dynamic) num_threads(wm_effective_threads(cfg_.n_threads))
     for (int qi = 0; qi < nq; qi++) {
-        SearchResult r = search(queries + (size_t)qi * cfg_.dim);
+        // Batch search returns only indices — skip the per-doc audit
+        // certificate collection (collect_audit=false): the ~O(N) push_back
+        // per query is pure overhead here (2026-09-06).
+        std::vector<float> qn;
+        SearchResult r = search(queries + (size_t)qi * cfg_.dim, qn,
+                                /*collect_audit=*/false);
         int base = qi * k;
         for (int j = 0; j < (int)r.indices.size() && j < k; j++)
             all[base + j] = r.indices[j];
@@ -1480,7 +1515,7 @@ SearchResult MadhavaL2::search_exact(const float* query, const std::vector<float
     auto t0 = std::chrono::high_resolution_clock::now();
 
     std::vector<std::pair<float, int>> scores((size_t)N);
-#pragma omp parallel for
+#pragma omp parallel for num_threads(wm_effective_threads(cfg_.n_threads))
     for (int i = 0; i < N; i++) {
         scores[i] = {exact_score(i, query), i};
     }
@@ -1513,9 +1548,9 @@ AuditResult MadhavaL2::search_audited(const float* query, int64_t k,
                                       int64_t max_audit_records) const {
     // WITNESS, NOT JUDGE (2.0.0 architecture):
     // This method does NOT recompute the Cauchy-Schwarz bounds after the fact.
-    // It turns on the motor's audit hook (Config::audit_record), runs the real
-    // search(), and READS the per-document pruning decision the motor captured
-    // AT THE MOMENT it made it (audit_ids / audit_ubs / audit_threshold).
+    // It runs the real search() (whose audit hook is unconditional) and READS
+    // the per-document pruning decision the motor captured AT THE MOMENT it
+    // made it (audit_ids / audit_ubs / audit_threshold).
     // The certificate is therefore byte-for-byte identical to the motor's own
     // pruning — eliminating the 1.9.0 false positives (462/973 violations on
     // arXiv d=1536) that came from recomputing bounds with inconsistent state.
@@ -1541,9 +1576,7 @@ AuditResult MadhavaL2::search_audited(const float* query, int64_t k,
     // K results. There is NO fallback here by design: this method must NEVER
     // recompute the Cauchy-Schwarz bounds after the fact — the 1.9.0 bug
     // (462/973 false "excluded" on arXiv d=1536) came from exactly that
-    // "judge" pattern. The removed `else` branch (rebuild the witness from
-    // audit_threshold) was dead code (cfg_.audit_record is never read by
-    // search()) AND architecturally wrong.
+    // "judge" pattern.
     //
     // FIX (2026-09-03, 1.9.11): HONOR max_audit_records. The old code
     // materialized an AuditRecord for EVERY excluded doc regardless of the
