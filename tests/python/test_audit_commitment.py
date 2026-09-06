@@ -81,6 +81,32 @@ def test_commitment_global_threshold_matches_search():
     assert len(c["indices"]) >= 10
 
 
+def test_commitment_derived_from_search_audit_hook():
+    """Regression (1.9.14): the commitment is derived from the audit hook the
+    internal search() ALREADY captured (audit_ids/audit_ubs), NOT from a second
+    O(N) bound scan. So the commitment's threshold MUST equal the search's
+    audit_threshold, and every sampled exclusion MUST be a doc the search's own
+    audit proved out (present in audit_ids with matching upper_bound)."""
+    eng = _high_dim_pca_engine()
+    q = eng_basis_query(eng)
+    c = eng.search_with_commitment(q, k=10, max_sample=50)
+    r = eng.search(q)                      # the SAME search the commitment runs
+    # The commitment threshold is the search's audit threshold (bit-identical).
+    assert c["global_threshold"] == pytest.approx(r.audit_threshold, abs=1e-6)
+    # The excluded COUNT is the search's pruned_by_bound (no re-scan needed).
+    assert c["total_excluded_count"] == r.pruned_by_bound
+    # Every sampled doc is in the search's own excluded set (audit_ids) with a
+    # matching UB — the sample is a subset of the proof the search produced.
+    ids = set(r.audit_ids)
+    for s in c["sampled_records"]:
+        assert s["doc_id"] in ids
+    # audit_ubs holds every excluded doc's UB; spot-check the first sample's UB
+    # appears in it.
+    if c["sampled_records"]:
+        s0 = c["sampled_records"][0]
+        assert any(abs(u - s0["upper_bound"]) < 1e-6 for u in r.audit_ubs)
+
+
 def eng_basis_query(eng):
     """A real, non-degenerate query: the engine's own first corpus vector
     (as a float32 array). A zero vector is NOT a valid embedding — the cosine

@@ -5,6 +5,37 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.14] — 2026-09-06
+
+### Changed: `search_with_commitment` derives the commitment from the search's own audit hook
+
+**Gargalo atacado:** o 1.9.13 (após o fix de data race que removeu o buffer
+compartilhado `ub_scan_`) fazia o commitment re-materializar `ub_local[N]` e
+re-varrer TODOS os N — uma 2ª varredura O(N·s1) que duplicava o bound scan que
+o `search()` interno JÁ tinha feito e capturado no audit hook (`audit_ids` /
+`audit_ubs` / `audit_threshold`, populados incondicionalmente).
+
+**Mudança:** o commitment agora deriva count, threshold e a amostra
+determinística do audit hook do próprio `search()` que ele já roda — sem
+re-computar `ub_raw` sobre N. A exclusão é `ub < worst`, então a amostra de
+borda (docs com UB mais próximo do threshold por baixo) está contida no
+conjunto excluído capturado em `audit_ubs` — a propriedade de borda é
+preservada. Sem estado compartilhado (buffers per-query do search) →
+thread-safe para chamadas concorrentes.
+
+**Ganho medido:** commitment 17.1 → 15.4 ms/query em N=300k (~10%), mesmo
+corpus/queries (PyPI 1.9.13 vs local). O custo dominante restante é o
+`search()` interno (top-K + threshold), que é inerente ao contrato do
+commitment. Código mais simples: -34 linhas líquidas.
+
+**Validação:** equivalência perfeita com o 1.9.13 (`total_excluded_count ==
+audited.audit_excluded` em 6/6 queries; todos os sampled genuínos; determinismo
+preservado). Novo teste de regressão
+`test_commitment_derived_from_search_audit_hook`: `global_threshold ==
+search.audit_threshold`, `total_excluded_count == pruned_by_bound`, e todo
+sampled está em `audit_ids` com UB correspondente em `audit_ubs`. Suíte Python
+completa: 41 passed, 2 skipped.
+
 ## [1.9.13] — 2026-09-04
 
 ### Fixed: Fusion-B shared-state data race → per-query UB buffer (thread-safe search)

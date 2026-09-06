@@ -1682,123 +1682,90 @@ AuditCommitment MadhavaL2::search_with_commitment(const float* query, int64_t k,
     float worst = exact_score(out.indices[K - 1], query);
     out.global_threshold = worst;
 
-    // Query projections (same as search() Stage-1) for the bound scan.
-    float qn = std::sqrt(dot_f32(query, query, D));
-    float qn_eff = normalize ? 1.0f : qn;
-    std::vector<float> qbuf;
-    const float* qproj = query;
-    if (normalize && qn > 1e-10f) {
-        qbuf.resize((size_t)D);
-        float inv = 1.0f / qn;
-        for (int j = 0; j < D; j++) qbuf[j] = query[j] * inv;
-        qproj = qbuf.data();
-    }
-    float pq1[256];
-    float q1s = 0;
-    for (int j = 0; j < s1; j++) { pq1[j] = dot_f32(qproj, P1_ + (size_t)j * D, D); q1s += pq1[j] * pq1[j]; }
-    float qr1 = std::sqrt(std::max(0.0f, qn_eff * qn_eff - q1s));
-    // SCAN INT8: the quant margin qm is needed when ub_raw uses the int8
-    // projections — native Int8 quant OR the opt-in scan_int8 on a float32
-    // corpus (which keeps pr1_ int8 alongside pr1_f_).
-    const bool scan_uses_int8 = (cfg_.quant == QuantMode::Int8)
-        || (cfg_.scan_int8 && pr1_ != nullptr && pr1_scale_ != nullptr);
-    float qm1 = 0;
-    if (scan_uses_int8)
-        for (int j = 0; j < s1; j++) qm1 += 0.5f * pr1_scale_[j] * std::fabs(pq1[j]);
-    float qn2 = qn_eff * qn_eff;
-
-    // --- Count excluded + deterministic boundary-biased sample ---
-    // (2026-09-04) The search() call above uses a LOCAL UB buffer now (no
-    // shared mutable state), so this commitment cannot read the search's UB.
-    // The UB of each doc depends only on (pq1, qr1, qm1) — recomputed here —
-    // so we materialize the same per-query UB vector locally. Cost: one O(N)
-    // ub_raw pass (the same as search()'s Stage-1 scan); the commitment is an
-    // audit path, not the hot query path.
+    // FUSION (2026-09-06): derive the commitment from the audit hook the
+    // search() above ALREADY captured — `base.audit_ubs` holds the Cauchy-
+    // Schwarz upper bound of EVERY provably-excluded doc (audit_ids[i] is
+    // excluded iff audit_ubs[i] < worst, proven in the search's parallel
+    // scan), and `base.audit_threshold` equals the exact K-th score `worst`.
+    // The previous implementation re-ran the bound scan over ALL N
+    // (ub_local) to recount exclusions + sample the boundary — a second
+    // O(N·s1) pass that duplicated work the search had already done.
+    // Because exclusion is `ub < worst`, the boundary docs (ub nearest to
+    // worst from below) are a subset of the excluded set, so sampling over
+    // audit_ubs preserves the boundary bias exactly. No shared state: audit
+    // buffers are per-query in search() → thread-safe for concurrent calls.
+    //
     // Deterministic PRNG: seed from the query hash + engine seed, so the
     // same query always yields the same sample (reproducible by an auditor).
     // We do NOT use a cryptographic RNG here — determinism is the goal.
     uint32_t seed = (uint32_t)cfg_.seed;
-    for (int j = 0; j < std::min(D, 16); j++) {
-        // fold the first bytes of the (normalized) query into the seed
-        uint32_t bits; std::memcpy(&bits, qproj + j, sizeof(uint32_t));
-        seed ^= bits + 0x9e3779b9u + (seed << 6) + (seed >> 2);
+    const float* qproj = query;
+    {
+        float qn = std::sqrt(dot_f32(query, query, D));
+        float qn_eff = normalize ? 1.0f : qn;
+        std::vector<float> qbuf;
+        if (normalize && qn > 1e-10f) {
+            qbuf.resize((size_t)D);
+            float inv = 1.0f / qn;
+            for (int j = 0; j < D; j++) qbuf[j] = query[j] * inv;
+            qproj = qbuf.data();
+        }
+        for (int j = 0; j < std::min(D, 16); j++) {
+            uint32_t bits; std::memcpy(&bits, qproj + j, sizeof(uint32_t));
+            seed ^= bits + 0x9e3779b9u + (seed << 6) + (seed >> 2);
+        }
     }
     std::mt19937 rng(seed);
 
-    long long excluded = 0;
+    // The excluded set + their UBs come from the search's audit hook.
+    // base.audit_ids/audit_ubs are populated whenever search() returned K
+    // results (the hook is unconditional) and are ordered by ascending doc_id
+    // (deterministic, per-thread lists concatenated in thread order).
+    const std::vector<int64_t>& excl_ids = base.audit_ids;
+    const std::vector<float>& excl_ubs = base.audit_ubs;
+    const long long excluded = (long long)excl_ids.size();
     const int64_t ms = std::max<int64_t>(0, max_sample);
     out.sampled_records.clear();
     out.sampled_records.reserve((size_t)std::min<int64_t>(ms, 4096));
-    std::vector<float> ub_local((size_t)N);
-    for (int i = 0; i < N; i++) ub_local[(size_t)i] = ub_raw(i, 1, pq1, qr1, qm1);
 
-    // Two-tier deterministic sampling:
-    //  (1) Boundary tier: docs whose bound is within `boundary_band` of the
-    //      threshold are the highest-value audit records. We collect them
-    //      directly (up to max_sample) — deterministic, no RNG.
-    //  (2) Reservoir tier: if the boundary band is empty (or we want a spread
-    //      sample), fill the rest with a deterministic reservoir over the
-    //      excluded set (seeded RNG → reproducible).
-    // This biases the sample to the boundary while staying deterministic and
-    // bounded. A fixed band of ~1% of the threshold range covers the docs
-    // nearest the cut — the ones regulators spot-check.
+    // Two-tier deterministic sampling over the EXCLUDED set (the search's own
+    // proof, not a recomputation):
+    //  (1) Boundary tier: excluded docs whose bound is within `boundary_band`
+    //      of the threshold — the highest-value audit records.
+    //  (2) Reservoir tier: fill the rest with a deterministic spread.
     float band = 0.01f * (1.0f + std::fabs(worst));
-    for (int i = 0; i < N; i++) {
-        float ub = ub_local[(size_t)i];   // UB materialized locally above
-        bool excl;
-        if (is_l2) {
-            float lb = vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub;
-            excl = lb > worst;
-        } else {
-            excl = ub < worst;
-        }
-        if (!excl) continue;
-        excluded++;
-
+    for (size_t i = 0; i < excl_ubs.size(); i++) {
+        float ub = excl_ubs[i];
+        int64_t doc_id = excl_ids[i];
         if ((int64_t)out.sampled_records.size() < ms) {
-            // Boundary tier first (nearest the threshold).
-            float gap = is_l2 ? (vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub) - worst
-                              : worst - ub;
+            float gap = is_l2 ? 0.0f : worst - ub;   // cosine: gap from below
             if (gap < band || (int64_t)out.sampled_records.size() < 4) {
-                AuditSample s; s.doc_id = i; s.upper_bound = ub; s.excluded = true;
+                AuditSample s; s.doc_id = doc_id; s.upper_bound = ub; s.excluded = true;
                 out.sampled_records.push_back(s);
             }
         }
     }
-    // Reservoir fill: if we have fewer than max_sample, top up with a
-    // deterministic spread over the excluded set (seeded RNG → reproducible).
-    // We re-walk in a second pass ONLY if the sample is not yet full, keeping
-    // the common case (boundary-rich) O(N) total.
+    // Reservoir fill over the excluded set (deterministic, seeded).
     if ((int64_t)out.sampled_records.size() < ms && excluded > (int64_t)out.sampled_records.size()) {
-        // Deterministic reservoir: for the first `seen` excluded we take the
-        // slot; afterwards replace with probability ms/seen (seeded).
         long long seen = 0;
         std::vector<AuditSample> reservoir;
         reservoir.reserve((size_t)ms);
-        for (int i = 0; i < N; i++) {
-            float ub = ub_local[(size_t)i];   // local UB (materialized above)
-            bool excl;
-            if (is_l2) {
-                float lb = vn_eff_[i] * vn_eff_[i] + qn2 - 2.0f * ub;
-                excl = lb > worst;
-            } else {
-                excl = ub < worst;
-            }
-            if (!excl) continue;
+        for (size_t i = 0; i < excl_ubs.size(); i++) {
+            float ub = excl_ubs[i];
+            int64_t doc_id = excl_ids[i];
             seen++;
             if ((int64_t)reservoir.size() < ms) {
-                AuditSample s; s.doc_id = i; s.upper_bound = ub; s.excluded = true;
+                AuditSample s; s.doc_id = doc_id; s.upper_bound = ub; s.excluded = true;
                 reservoir.push_back(s);
             } else {
                 uint64_t r = rng();
                 if ((r % (uint64_t)seen) < (uint64_t)ms) {
                     size_t slot = (size_t)(r % (uint64_t)ms);
-                    reservoir[slot].doc_id = i;
+                    reservoir[slot].doc_id = doc_id;
                     reservoir[slot].upper_bound = ub;
                 }
             }
         }
-        // Merge: boundary samples first, then reservoir fill.
         for (auto& s : reservoir) {
             if ((int64_t)out.sampled_records.size() >= ms) break;
             out.sampled_records.push_back(s);
