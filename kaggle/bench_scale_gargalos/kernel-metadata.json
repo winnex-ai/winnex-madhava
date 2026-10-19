@@ -1,0 +1,17 @@
+{
+  "id": "kleniopadilha/winnex-gargalos-escala-bigann-word2vec",
+  "title": "winnex gargalos escala bigann word2vec",
+  "code_file": "winnex-gargalos-escala-bigann-word2vec.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": false,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "dataset_sources": [
+    "shurangwu/bigann-100m"
+  ],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}

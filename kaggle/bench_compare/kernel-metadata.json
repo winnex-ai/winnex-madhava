@@ -1,0 +1,16 @@
+{
+  "id": "kleniopadilha/winnex-madhava-1-7-speed-gpu-vs-hnsw-ivf-ivf-pq",
+  "title": "winnex-madhava 1.7 speed GPU vs HNSW IVF IVF-PQ",
+  "code_file": "winnex_madhava_speed_gpu_vs_hnsw.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_internet": true,
+  "model_strategy": "none",
+  "dataset_sources": [
+    "shurangwu/bigann-100m"
+  ],
+  "competition_sources": [],
+  "kernel_sources": []
+}

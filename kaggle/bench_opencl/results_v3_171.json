@@ -1,0 +1,14 @@
+{
+  "package": "winnex-madhava",
+  "version": "1.7.1",
+  "backend": "gpu",
+  "gpu_reason": "",
+  "methodology": "official BIGANN-100M GT, 1M subset, 300 queries, speed mode (QK^T) via OpenCL GPU",
+  "n_queries": 300,
+  "dim": 128,
+  "k": 10,
+  "build_s": 1.327946424484253,
+  "recall_at_10": 0.0003333333333333334,
+  "ndcg_at_10": 0.0002838103921387366,
+  "latency_ms_per_query": 98.23034286499023
+}

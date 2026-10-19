@@ -1,0 +1,18 @@
+{
+  "id": "kleniopadilha/winnex-madhava-199-stream-2-datasets",
+  "title": "winnex madhava 199 stream 2 datasets",
+  "code_file": "winnex-madhava-1-9-9-stream-2-datasets.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": false,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "dataset_sources": [
+    "shurangwu/bigann-100m",
+    "tomtum/openai-arxiv-embeddings"
+  ],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}

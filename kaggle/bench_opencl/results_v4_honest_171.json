@@ -1,0 +1,15 @@
+{
+  "package": "winnex-madhava",
+  "version": "1.7.1",
+  "backend": "gpu",
+  "gpu_reason": "",
+  "methodology": "speed mode (QK^T) via OpenCL GPU on 1M BIGANN subset; recall vs exact brute-force L2 ceiling on the SAME subset",
+  "n_queries": 300,
+  "dim": 128,
+  "k": 10,
+  "build_s": 1.3741352558135986,
+  "recall_at_10_vs_exact_ceiling": 1.0,
+  "ndcg_at_10_vs_exact_ceiling": 1.0,
+  "latency_ms_per_query": 98.2493543624878,
+  "exact_vs_ceiling": true
+}

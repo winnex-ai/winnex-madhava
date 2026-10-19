@@ -1,0 +1,59 @@
+{
+  "package": "winnex-madhava",
+  "version": "1.9.2",
+  "installed_from": "PyPI",
+  "dataset": "tomtum/openai-arxiv-embeddings",
+  "dim": 1536,
+  "N": 19900,
+  "NQ": 100,
+  "K": 10,
+  "metric": "cosine",
+  "gt": "the motor's own search_exact on the same query (valid ceiling)",
+  "note": "raw data passed to the motor; no numpy normalization or re-ordering",
+  "results": {
+    "random": {
+      "recall@10": 0.994,
+      "bound_violations": 0,
+      "pruned_by_bound_pct": 0.0,
+      "pruned_by_prefilter_pct": 95.0,
+      "survivor_pct": 5.0,
+      "latency_ms": 26.46,
+      "build_s": 0.6,
+      "residual_e_v": 0.9265,
+      "commitment": {
+        "queries": 100,
+        "sample_bounded": 100,
+        "exact_count_match": 100,
+        "deterministic": 100,
+        "genuine_exclusions": 100,
+        "total_excluded": 0,
+        "max_commitment_payload_bytes": 243,
+        "sample_record": null
+      }
+    },
+    "pca_corpus": {
+      "recall@10": 1.0,
+      "bound_violations": 0,
+      "pruned_by_bound_pct": 87.1,
+      "pruned_by_prefilter_pct": 8.5,
+      "survivor_pct": 5.0,
+      "latency_ms": 23.0,
+      "build_s": 23.0,
+      "residual_e_v": 0.2462,
+      "commitment": {
+        "queries": 100,
+        "sample_bounded": 100,
+        "exact_count_match": 100,
+        "deterministic": 100,
+        "genuine_exclusions": 100,
+        "total_excluded": 1734004,
+        "max_commitment_payload_bytes": 3776,
+        "sample_record": {
+          "doc_id": 0,
+          "upper_bound": 0.8413136601448059,
+          "excluded": true
+        }
+      }
+    }
+  }
+}

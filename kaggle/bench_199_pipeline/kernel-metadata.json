@@ -1,0 +1,19 @@
+{
+  "id": "kleniopadilha/winnex-pipeline-honest-bench-v199",
+  "title": "winnex pipeline honest bench v199",
+  "code_file": "winnex-pipeline-1-9-9-honest.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": false,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "dataset_sources": [
+    "rtatman/glove-global-vectors-for-word-representation",
+    "hojjatk/mnist-dataset",
+    "julien040/hacker-news-openai-embeddings"
+  ],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "model_sources": []
+}

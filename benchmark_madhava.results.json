@@ -1,0 +1,118 @@
+{
+  "package_version": "1.8.1",
+  "correctness": {
+    "n": 20000,
+    "d": 128,
+    "nq": 50,
+    "k": 10,
+    "k1_fraction": 0.4,
+    "recall_at_10": 1.0,
+    "ndcg_at_10": 1.0,
+    "bound_violations": 0,
+    "latency_ms_mean": 2.6292,
+    "latency_ms_p50": 0.34,
+    "latency_ms_p99": 58.0295,
+    "k1_fraction_mean": 0.4
+  },
+  "scale": [
+    {
+      "vectors": 1000,
+      "build_seconds": 0.003,
+      "search_ms_per_query": 0.0319,
+      "queries_per_sec": 31315.3,
+      "recall_at_10": 0.96,
+      "bound_violations": 0
+    },
+    {
+      "vectors": 10000,
+      "build_seconds": 0.021,
+      "search_ms_per_query": 0.1699,
+      "queries_per_sec": 5885.7,
+      "recall_at_10": 1.0,
+      "bound_violations": 0
+    },
+    {
+      "vectors": 100000,
+      "build_seconds": 0.147,
+      "search_ms_per_query": 1.5416,
+      "queries_per_sec": 648.7,
+      "recall_at_10": 1.0,
+      "bound_violations": 0
+    },
+    {
+      "vectors": 1000000,
+      "build_seconds": 0.459,
+      "search_ms_per_query": 19.9553,
+      "queries_per_sec": 50.1,
+      "recall_at_10": 1.0,
+      "bound_violations": 0
+    }
+  ],
+  "vs_exact": [
+    {
+      "vectors": 10000,
+      "recall_at_10": 1.0,
+      "bound_violations": 0,
+      "bound_ms": 6.4675,
+      "exact_ms": 31.9985,
+      "speedup_vs_exact": 4.95,
+      "exact_is_ceiling": true
+    },
+    {
+      "vectors": 100000,
+      "recall_at_10": 1.0,
+      "bound_violations": 0,
+      "bound_ms": 7.5381,
+      "exact_ms": 58.6965,
+      "speedup_vs_exact": 7.79,
+      "exact_is_ceiling": true
+    },
+    {
+      "vectors": 1000000,
+      "recall_at_10": 1.0,
+      "bound_violations": 0,
+      "bound_ms": 19.6318,
+      "exact_ms": 457.8918,
+      "speedup_vs_exact": 23.32,
+      "exact_is_ceiling": true
+    }
+  ],
+  "tradeoff": [
+    {
+      "k1_fraction": 0.05,
+      "recall_at_10": 0.8833,
+      "bound_violations": 0,
+      "latency_ms": 0.234
+    },
+    {
+      "k1_fraction": 0.1,
+      "recall_at_10": 0.9633,
+      "bound_violations": 0,
+      "latency_ms": 0.2533
+    },
+    {
+      "k1_fraction": 0.2,
+      "recall_at_10": 1.0,
+      "bound_violations": 0,
+      "latency_ms": 0.2512
+    },
+    {
+      "k1_fraction": 0.3,
+      "recall_at_10": 1.0,
+      "bound_violations": 0,
+      "latency_ms": 0.2819
+    },
+    {
+      "k1_fraction": 0.4,
+      "recall_at_10": 1.0,
+      "bound_violations": 0,
+      "latency_ms": 0.3086
+    },
+    {
+      "k1_fraction": 0.6,
+      "recall_at_10": 1.0,
+      "bound_violations": 0,
+      "latency_ms": 0.3526
+    }
+  ]
+}

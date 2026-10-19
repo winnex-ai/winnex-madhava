@@ -1,0 +1,63 @@
+{
+  "package": "winnex-madhava",
+  "version": "1.9.2",
+  "installed_from": "PyPI",
+  "dataset": "rtatman/glove",
+  "dim": 100,
+  "N": 19900,
+  "NQ": 100,
+  "K": 10,
+  "metric": "cosine",
+  "gt": "the motor's own search_exact on the same query (valid ceiling)",
+  "note": "raw data passed to the motor; no numpy normalization or re-ordering",
+  "results": {
+    "random": {
+      "recall@10": 1.0,
+      "bound_violations": 0,
+      "pruned_by_bound_pct": 99.9,
+      "pruned_by_prefilter_pct": 0.0,
+      "survivor_pct": 5.0,
+      "latency_ms": 25.68,
+      "build_s": 0.0,
+      "residual_e_v": 0.0003,
+      "commitment": {
+        "queries": 100,
+        "sample_bounded": 100,
+        "exact_count_match": 100,
+        "deterministic": 100,
+        "genuine_exclusions": 100,
+        "total_excluded": 1988995,
+        "max_commitment_payload_bytes": 3888,
+        "sample_record": {
+          "doc_id": 0,
+          "upper_bound": 0.07313313335180283,
+          "excluded": true
+        }
+      }
+    },
+    "pca_corpus": {
+      "recall@10": 1.0,
+      "bound_violations": 0,
+      "pruned_by_bound_pct": 72.4,
+      "pruned_by_prefilter_pct": 22.6,
+      "survivor_pct": 5.0,
+      "latency_ms": 21.16,
+      "build_s": 0.2,
+      "residual_e_v": null,
+      "commitment": {
+        "queries": 100,
+        "sample_bounded": 100,
+        "exact_count_match": 100,
+        "deterministic": 100,
+        "genuine_exclusions": 100,
+        "total_excluded": 1441708,
+        "max_commitment_payload_bytes": 3806,
+        "sample_record": {
+          "doc_id": 0,
+          "upper_bound": 0.42523884773254395,
+          "excluded": true
+        }
+      }
+    }
+  }
+}

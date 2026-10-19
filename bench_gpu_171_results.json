@@ -1,0 +1,119 @@
+{
+  "package": "winnex-madhava",
+  "version": "1.7.1",
+  "gpu": "NVIDIA GeForce RTX 5060 Ti",
+  "methodology": "RECALL vs GT OFICIAL BIGANN-100M L2 (alinhamento direto), recall normalizado por cobertura do subset; teto = search_exact L2 no subset (limite fisico); speed GPU = exact scan QK^T, nao sublinear (honestidade).",
+  "reference": "GT OFICIAL BIGANN-100M (nao ceiling artificial)",
+  "N_subset": 1000000,
+  "NQ": 100,
+  "dim": 128,
+  "k": 10,
+  "gt_coverage_topk": 0.006,
+  "ceiling_search_exact": {
+    "recall_at_10": 0.95,
+    "ndcg_at_10": 0.95,
+    "latency_ms": 9.26603078842163,
+    "build_s": 0.43105292320251465
+  },
+  "methods": [
+    {
+      "method": "MadhavaL2 bound (int8 5%/1%)",
+      "recall_at_10": 0.95,
+      "ndcg_at_10": 0.95,
+      "latency_ms": 11.667308807373047,
+      "qps": 85.70956820548534,
+      "build_s": 0.36946916580200195,
+      "efficiency_pct": 100.0,
+      "bound_violations": 0,
+      "config": {
+        "k1_fraction": 0.05,
+        "k2_fraction": 0.01
+      }
+    },
+    {
+      "method": "MadhavaL2 bound (int8 100%/100%)",
+      "recall_at_10": 0.95,
+      "ndcg_at_10": 0.95,
+      "latency_ms": 23.558571338653564,
+      "qps": 42.447395711099716,
+      "build_s": 0.37390661239624023,
+      "efficiency_pct": 100.0,
+      "config": {
+        "k1_fraction": 1.0,
+        "k2_fraction": 1.0
+      },
+      "pruning_recall_cost_vs_aggressive": 0.0
+    },
+    {
+      "method": "Madhava speed GPU (OpenCL exact scan)",
+      "recall_at_10": 0.95,
+      "ndcg_at_10": 0.95,
+      "latency_ms": 2.408750057220459,
+      "qps": 415.15307783902455,
+      "build_s": 0.287705659866333,
+      "efficiency_pct": 100.0,
+      "backend": "gpu",
+      "has_gpu": true,
+      "batch_ms_total": 155.23552894592285,
+      "batch_ms_per_query": 1.5523552894592285,
+      "batch_recall_at_10": 0.95,
+      "batch_ndcg_at_10": 0.95,
+      "uint8_to_f32_conversion_s": 0.09561371803283691,
+      "honesty_note": "exact scan QK^T full corpus; NOT sublinear"
+    },
+    {
+      "method": "Madhava speed CPU",
+      "recall_at_10": 0.95,
+      "ndcg_at_10": 0.95,
+      "latency_ms": 9.562337398529053,
+      "qps": 104.57694163289273,
+      "build_s": 0,
+      "efficiency_pct": 100.0
+    },
+    {
+      "method": "HNSW(ef=64)",
+      "recall_at_10": 0.95,
+      "ndcg_at_10": 0.95,
+      "latency_ms": 0.14040470123291016,
+      "qps": 7122.268636440822,
+      "build_s": 23.30685257911682,
+      "efficiency_pct": 100.0
+    },
+    {
+      "method": "HNSW(ef=128)",
+      "recall_at_10": 0.95,
+      "ndcg_at_10": 0.95,
+      "latency_ms": 0.23322343826293945,
+      "qps": 4287.733717708877,
+      "build_s": 23.30685257911682,
+      "efficiency_pct": 100.0
+    },
+    {
+      "method": "IVF(nlist=4000,np=10)",
+      "recall_at_10": 0.95,
+      "ndcg_at_10": 0.95,
+      "latency_ms": 0.12003183364868164,
+      "qps": 8331.123249577913,
+      "build_s": 204.293438911438,
+      "efficiency_pct": 100.0
+    },
+    {
+      "method": "IVF(nlist=4000,np=50)",
+      "recall_at_10": 0.95,
+      "ndcg_at_10": 0.95,
+      "latency_ms": 0.3544926643371582,
+      "qps": 2820.932844604365,
+      "build_s": 204.293438911438,
+      "efficiency_pct": 100.0
+    },
+    {
+      "method": "IVF-PQ(nlist=4000,np=10)",
+      "recall_at_10": 0.95,
+      "ndcg_at_10": 0.95,
+      "latency_ms": 0.08000850677490234,
+      "qps": 12498.6709577448,
+      "build_s": 20.76078987121582,
+      "efficiency_pct": 100.0
+    }
+  ]
+}
