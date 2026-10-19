@@ -30,6 +30,15 @@
 // no Windows (que usa LoadLibrary/GetProcAddress/FreeLibrary). Sem esta camada
 // o build MSVC falha neste arquivo, e o wheel para Windows não pode existir.
 #ifdef _WIN32
+// NOMINMAX: <windows.h> define min/max como MACROS, e isso quebra qualquer
+// std::min/std::max — o MSVC reporta "error C2589: '(' illegal token on the
+// right side of '::'". Definir antes do include suprime as macros.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <windows.h>
 static void* ocl_open(const char* nome) { return (void*)LoadLibraryA(nome); }
 static void* ocl_sym(void* h, const char* nome) {
@@ -158,7 +167,7 @@ bool load_opencl(const char* explicit_lib = nullptr) {
     LOAD(clReleaseContext);
 #undef LOAD
     if (!ok) {
-        dlclose(h);
+        ocl_close(h);
         delete api;
         return false;
     }
