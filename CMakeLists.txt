@@ -16,13 +16,25 @@ option(MADHAVA_BUILD_EXAMPLES "Build examples" ON)
 # Machines without AVX2 fall back to the scalar path at runtime.
 option(MADHAVA_ENABLE_SIMD "Enable AVX2/FMA + -O3" ON)
 
+# Flags por COMPILADOR, não por SO. -mavx2/-mfma são do GCC/Clang; o MSVC usa
+# /arch:AVX2 e rejeita as outras. E arm64 (Apple Silicon, ARM Windows) não tem
+# AVX2 — aplicar as flags ali quebra o build.
 if(MADHAVA_ENABLE_SIMD AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -mavx2 -mfma -funroll-loops")
+    if(MSVC)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /O2 /arch:AVX2")
+    else()
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3 -mavx2 -mfma -funroll-loops")
+    endif()
     add_compile_definitions(MADHAVA_FORCE_SIMD)
 endif()
 
 # Dependencies
-find_package(OpenMP REQUIRED)
+# OpenMP: obrigatório no Linux, opcional em macOS/Windows. O Apple Clang não
+# traz libomp por padrão, e exigir quebra o build nos runners macOS.
+find_package(OpenMP)
+if(NOT OpenMP_CXX_FOUND)
+    message(STATUS "winnex-madhava: OpenMP não encontrado — build single-thread")
+endif()
 # The Development component defines python3_add_library(), which pybind11's
 # New-Tools macros require to create the _winnex_madhava module. It is safe in the
 # manylinux container: headers ship under /opt/python/cp*-cp*/include and the
@@ -69,7 +81,9 @@ target_include_directories(winnex_madhava PUBLIC
 )
 # OpenCL headers are vendored (no system dependency at build time).
 target_include_directories(winnex_madhava PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendor)
-target_link_libraries(winnex_madhava PUBLIC OpenMP::OpenMP_CXX)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(winnex_madhava PUBLIC OpenMP::OpenMP_CXX)
+endif()
 if(MADHAVA_GPU_BACKEND STREQUAL "cuda")
     find_package(CUDAToolkit REQUIRED)
     target_link_libraries(winnex_madhava PUBLIC CUDA::cublas CUDA::cudart)
@@ -86,7 +100,9 @@ add_library(winnex_madhava_shared SHARED ${MADHAVA_CORE_SRC})
 set_target_properties(winnex_madhava_shared PROPERTIES OUTPUT_NAME winnex_madhava)
 target_include_directories(winnex_madhava_shared PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_include_directories(winnex_madhava_shared PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/vendor)
-target_link_libraries(winnex_madhava_shared PUBLIC OpenMP::OpenMP_CXX)
+if(OpenMP_CXX_FOUND)
+    target_link_libraries(winnex_madhava_shared PUBLIC OpenMP::OpenMP_CXX)
+endif()
 if(MADHAVA_GPU_BACKEND STREQUAL "cuda")
     target_link_libraries(winnex_madhava_shared PUBLIC CUDA::cublas CUDA::cudart)
 elseif(MADHAVA_GPU_BACKEND STREQUAL "opencl")
