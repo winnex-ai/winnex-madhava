@@ -26,7 +26,24 @@
 // Vendored OpenCL headers (types + constants only; no link-time loader).
 #include <CL/cl.h>
 
+// Carregamento dinâmico portátil: dlopen/dlsym/dlclose são POSIX e não existem
+// no Windows (que usa LoadLibrary/GetProcAddress/FreeLibrary). Sem esta camada
+// o build MSVC falha neste arquivo, e o wheel para Windows não pode existir.
+#ifdef _WIN32
+#include <windows.h>
+static void* ocl_open(const char* nome) { return (void*)LoadLibraryA(nome); }
+static void* ocl_sym(void* h, const char* nome) {
+    return (void*)GetProcAddress((HMODULE)h, nome);
+}
+static void ocl_close(void* h) { if (h) FreeLibrary((HMODULE)h); }
+static const char* ocl_error() { return "LoadLibrary/GetProcAddress falhou"; }
+#else
 #include <dlfcn.h>
+static void* ocl_open(const char* nome) { return dlopen(nome, RTLD_NOW | RTLD_LOCAL); }
+static void* ocl_sym(void* h, const char* nome) { return dlsym(h, nome); }
+static void ocl_close(void* h) { if (h) dlclose(h); }
+static const char* ocl_error() { const char* e = dlerror(); return e ? e : "dlopen falhou"; }
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -101,17 +118,17 @@ bool load_opencl(const char* explicit_lib = nullptr) {
     if (g_ocl && g_ocl_lib == want) return true;
     if (g_ocl && explicit_lib && *explicit_lib && g_ocl_lib != want) {
         // The previously loaded loader is not the requested one — release it.
-        dlclose(g_ocl_handle);
+        ocl_close(g_ocl_handle);
         delete g_ocl;
         g_ocl = nullptr;
         g_ocl_lib.clear();
     }
 
-    void* h = dlopen(want.c_str(), RTLD_NOW | RTLD_LOCAL);
+    void* h = ocl_open(want.c_str());
     if (!h) {
         std::fprintf(stderr,
                      "[Winnex Madhava] OpenCL loader '%s' failed to load: %s\n",
-                     want.c_str(), dlerror() ? dlerror() : "dlopen failed");
+                     want.c_str(), ocl_error());
         return false;
     }
     std::fprintf(stderr,
@@ -119,7 +136,7 @@ bool load_opencl(const char* explicit_lib = nullptr) {
     auto api = new OCLApi;
     bool ok = true;
 #define LOAD(name) \
-    *(void**)(&api->name) = dlsym(h, #name); \
+    *(void**)(&api->name) = ocl_sym(h, #name); \
     if (!api->name) ok = false
     LOAD(clGetPlatformIDs);
     LOAD(clGetDeviceIDs);
