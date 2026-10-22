@@ -1,10 +1,14 @@
 [build-system]
-requires = ["scikit-build-core>=0.10", "pybind11>=2.12", "cmake>=3.20", "auditwheel>=5.0"]
+requires = ["scikit-build-core[pyproject]>=1.0", "pybind11>=2.12", "cmake>=3.20", "auditwheel>=5.0"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "winnex-madhava"
-version = "1.9.17"
+# A versão vem da tag git (setuptools-scm), não de um literal. O literal
+# ficou em 1.9.17 enquanto a tag era v1.9.18, e o publish falhou com
+# "400 File already exists" porque o wheel subia com a versão antiga.
+# winnex-nano e winnex-xfactor já usam este esquema.
+dynamic = ["version"]
 description = "Deterministic vector search with Cauchy-Schwarz bound pruning + exact-L2 post-filter (BIGANN L2 verified) — provable completeness for RAG indexing and regulated retrieval."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -42,6 +46,7 @@ Kaggle = "https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-200-queri
 Benchmark = "https://www.kaggle.com/code/kleniopadilha/winnex-madhava-pip-200-queries"
 
 [tool.scikit-build]
+metadata.version.provider = "scikit_build_core.metadata.setuptools_scm"
 minimum-version = "0.10"
 build-dir = "build/{wheel_tag}"
 cmake.version = ">=3.20"
