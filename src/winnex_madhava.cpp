@@ -27,8 +27,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <random>
 #include <chrono>
+#include <limits>
 #include <utility>
 
 #ifdef _OPENMP
@@ -42,6 +45,21 @@
 namespace winnex_madhava {
 
 namespace {
+
+// STACK-BUFFER FIX (2026-10-21). The projection scratch buffers used to be
+// fixed-size arrays on the stack:
+//
+//     float pj1[256];  float pj2[256];  float pq1[256];  float pq2[256];
+//
+// and the loops wrote s1 / s2 elements with no bound check. Any stage1_dim or
+// stage2_dim above 256 overwrote the stack: measured, `stage2_dim=257` on
+// d=512 crashed the process with SIGSEGV at build_engine — no exception, no
+// message. The README recommends stage2_dim=192 for 1536-d embeddings, so a
+// user raising it for quality lost the process silently.
+//
+// Every one of these buffers is now a std::vector sized by the config. The
+// allocation happens once per build/search, not per element, so the cost is
+// negligible.
 
 // OpenMP thread helpers with a no-OpenMP fallback (compile without -fopenmp).
 inline int wm_omp_max_threads() {
@@ -460,7 +478,7 @@ void MadhavaL2::set_basis(const float* P1, const float* P2) {
         float vn2 = normalize ? 1.0f : nn;
         // recompute Stage-1 projection + residual
         float pn1 = 0.0f;
-        float pj1[256];
+        std::vector<float> pj1((size_t)s1);
         for (int j = 0; j < s1; j++) {
             float d = dot_f32(base_v, P1_ + (size_t)j * D, D);
             pr1_f_[(size_t)i * s1 + j] = d;
@@ -470,11 +488,11 @@ void MadhavaL2::set_basis(const float* P1, const float* P2) {
         e1_[i] = std::sqrt(std::max(0.0f, vn2 - pn1));
         // SCAN INT8: also refresh the int8 projections after a basis change.
         if (cfg_.scan_int8 && pr1_ != nullptr && pr1_scale_ != nullptr) {
-            quantize(pj1, pr1_ + (size_t)i * s1, pr1_scale_, s1);
+            quantize(pj1.data(), pr1_ + (size_t)i * s1, pr1_scale_, s1);
         }
         if (s2 > 0) {
             float pn2 = 0.0f;
-            float pj2[256];
+            std::vector<float> pj2((size_t)s2);
             for (int j = 0; j < s2; j++) {
                 float d = dot_f32(base_v, P2_ + (size_t)j * D, D);
                 pr2_f_[(size_t)i * s2 + j] = d;
@@ -483,7 +501,7 @@ void MadhavaL2::set_basis(const float* P1, const float* P2) {
             }
             e2_[i] = std::sqrt(std::max(0.0f, vn2 - pn2));
             if (cfg_.scan_int8 && pr2_ != nullptr && pr2_scale_ != nullptr) {
-                quantize(pj2, pr2_ + (size_t)i * s2, pr2_scale_, s2);
+                quantize(pj2.data(), pr2_ + (size_t)i * s2, pr2_scale_, s2);
             }
         }
     }
@@ -516,12 +534,60 @@ void MadhavaL2::build_float32(const float* raw_base, int n) {
     // for search). Keep it as an owned member.
     delete[] corpus_u8_owned_;
     corpus_u8_owned_ = new uint8_t[(size_t)n * D];
-    for (size_t i = 0; i < (size_t)n * D; i++) {
-        float v = raw_base[i];
-        float q = (v + 1.0f) * 127.5f;
-        if (q < 0.0f) q = 0.0f;
-        if (q > 255.0f) q = 255.0f;
-        corpus_u8_owned_[i] = (uint8_t)q;
+    //
+    // RANGE-AWARE RE-QUANTIZATION (BUG FIX 2026-10-21).
+    //
+    // This used the affine map for unit-norm embeddings, (v+1)*127.5, which is
+    // correct ONLY when v ∈ [-1, 1]. It was applied unconditionally, so a
+    // float32 corpus whose values exceed 1 — e.g. raw BIGANN/SIFT vectors in
+    // [0, 255], a perfectly valid metric="l2" input — SATURATED: every element
+    // became clamp((v+1)*127.5) = 255. Measured on a uint8 corpus cast to
+    // float32: 172 -> 255, 10 -> 255, 127 -> 255. The whole corpus collapsed to
+    // a single constant vector, so exact_score() saw a different space than the
+    // projections, the L2 bound fell BELOW the true inner product, and the
+    // engine produced provably-excluded documents with bound_violations > 0 —
+    // which the literal `bound_violations = 0` never reported.
+    //
+    // The fix measures the actual value range and picks the map:
+    //   data already in [0, 255]      -> round directly (uint8 corpus semantics)
+    //   data in [-1, 1]               -> affine (the unit-norm embedding case)
+    //   anything else                 -> min-max affine over the observed range
+    // The choice is recorded so callers can see which one was used.
+    {
+        float lo = raw_base[0], hi = raw_base[0];
+        for (size_t i = 1; i < (size_t)n * D; i++) {
+            lo = std::min(lo, raw_base[i]);
+            hi = std::max(hi, raw_base[i]);
+        }
+        const bool already_u8 = (lo >= 0.0f && hi <= 255.0f && hi > 1.5f);
+        const bool unit_norm  = (lo >= -1.5f && hi <= 1.5f);
+        if (already_u8) {
+            // Input is already in uint8 range: keep the exact values. Rounding
+            // is the identity for integral inputs and the best 8-bit
+            // approximation otherwise.
+            for (size_t i = 0; i < (size_t)n * D; i++) {
+                float q = raw_base[i] + 0.5f;
+                if (q < 0.0f) q = 0.0f;
+                if (q > 255.0f) q = 255.0f;
+                corpus_u8_owned_[i] = (uint8_t)q;
+            }
+        } else if (unit_norm) {
+            for (size_t i = 0; i < (size_t)n * D; i++) {
+                float v = raw_base[i];
+                float q = (v + 1.0f) * 127.5f;
+                if (q < 0.0f) q = 0.0f;
+                if (q > 255.0f) q = 255.0f;
+                corpus_u8_owned_[i] = (uint8_t)q;
+            }
+        } else {
+            const float span = (hi > lo) ? (hi - lo) : 1.0f;
+            for (size_t i = 0; i < (size_t)n * D; i++) {
+                float q = (raw_base[i] - lo) * (255.0f / span);
+                if (q < 0.0f) q = 0.0f;
+                if (q > 255.0f) q = 255.0f;
+                corpus_u8_owned_[i] = (uint8_t)q;
+            }
+        }
     }
     build(corpus_u8_owned_, n);
 }
@@ -586,6 +652,10 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
     base_ = raw_base;
     n_ = n;
     built_ = true;
+    if (std::getenv("MADHAVA_DEBUG_VIOL"))
+        std::fprintf(stderr, "[build] entrada: metric=%d dim=%d s1=%d s2=%d base_[0..4]=%d,%d,%d,%d,%d\n",
+                     (int)cfg_.metric, cfg_.dim, cfg_.stage1_dim, cfg_.stage2_dim,
+                     (int)base_[0],(int)base_[1],(int)base_[2],(int)base_[3],(int)base_[4]);
     int D = cfg_.dim, s1 = cfg_.stage1_dim, s2 = cfg_.stage2_dim;
     bool normalize = (cfg_.metric == Metric::Cosine) && cfg_.normalize_input;
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -694,10 +764,16 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
     std::vector<float> ma1(s1, 0), ma2(s2 > 0 ? s2 : 0);
     for (int i = 0; i < sn; i++) {
         float raw_norm;
-        load_raw(base_ + (size_t)i * D, ck.data() + (size_t)i * D, D, normalize);
+        raw_norm = load_raw(base_ + (size_t)i * D, ck.data() + (size_t)i * D, D, normalize);
         vn_[i] = raw_norm;
         vn_eff_[i] = normalize ? 1.0f : raw_norm;
+        if (std::getenv("MADHAVA_DEBUG_VIOL") && i < 2)
+            std::fprintf(stderr, "[lr] i=%d raw_norm=%.1f base_[0]=%d ck[0]=%.1f\n",
+                         i, (double)raw_norm, (int)base_[i*D], (double)ck[(size_t)i*D]);
     }
+    if (std::getenv("MADHAVA_DEBUG_VIOL"))
+        std::fprintf(stderr, "[calib] sn=%d normalize=%d vn_[0]=%.1f vn_eff_[0]=%.1f\n",
+                     sn, (int)normalize, (double)vn_[0], (double)vn_eff_[0]);
     for (int i = 0; i < sn; i++) {
         float* v = ck.data() + (size_t)i * D;
         for (int j = 0; j < s1; j++) {
@@ -747,8 +823,18 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
             }
         } else {
             for (int i = 0; i < nt; i++) {
-                float raw_norm;
-                load_raw(base_ + (size_t)(p + i) * D, ch.data() + (size_t)i * D, D, normalize);
+                // BUG FIX (2026-10-21): the return value of load_raw was
+                // DISCARDED — `float raw_norm;` was declared uninitialised and
+                // then stored into vn_/vn_eff_. Every document therefore got
+                // whatever was on the stack (0.0 / 1.0 in practice), so the
+                // residual e(v) = sqrt(vn_eff² − ‖Pv‖²) was clamped to 0,
+                // the Cauchy-Schwarz term e(v)·e(q) vanished from the bound,
+                // and the L2 lower bound rose ABOVE the true distance. That is
+                // a real violation of the pruning guarantee — invisible while
+                // `bound_violations` was a hardcoded literal 0.
+                // Measured before: 200 of 200 evaluated documents violated.
+                const float raw_norm = load_raw(base_ + (size_t)(p + i) * D,
+                                                ch.data() + (size_t)i * D, D, normalize);
                 vn_[p + i] = raw_norm;
                 vn_eff_[p + i] = normalize ? 1.0f : raw_norm;
             }
@@ -758,7 +844,7 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
             int id = p + i;
             float* v = ch.data() + (size_t)i * D;
             // Stage-1
-            float pj1[256];
+            std::vector<float> pj1((size_t)s1);
             float pn1 = 0;
             for (int j = 0; j < s1; j++) { pj1[j] = dot_f32(v, P1_ + (size_t)j * D, D); pn1 += pj1[j] * pj1[j]; }
             if (cfg_.quant == QuantMode::None) {
@@ -766,35 +852,61 @@ void MadhavaL2::build(const uint8_t* raw_base, int n) {
                 // SCAN INT8: also quantize the projection so ub_raw can use the
                 // fast int8 scan. The scale was calibrated on a sample above.
                 if (cfg_.scan_int8 && pr1_ != nullptr) {
-                    quantize(pj1, pr1_ + (size_t)id * s1, pr1_scale_, s1);
+                    quantize(pj1.data(), pr1_ + (size_t)id * s1, pr1_scale_, s1);
                 }
             } else {
-                quantize(pj1, pr1_ + (size_t)id * s1, pr1_scale_, s1);
+                quantize(pj1.data(), pr1_ + (size_t)id * s1, pr1_scale_, s1);
             }
             // Cauchy-Schwarz residual over the REAL float32 projection:
             // e(v) = sqrt(||v||² − ||Pv||²). This is what the inequality requires.
             float vn2 = vn_eff_[id] * vn_eff_[id];
             e1_[id] = std::sqrt(std::max(0.0f, vn2 - pn1));
+
             // Stage-2
             if (s2 > 0) {
-                float pj2[256];
+                std::vector<float> pj2((size_t)s2);
                 float pn2 = 0;
                 for (int j = 0; j < s2; j++) { pj2[j] = dot_f32(v, P2_ + (size_t)j * D, D); pn2 += pj2[j] * pj2[j]; }
                 if (cfg_.quant == QuantMode::None) {
                     for (int j = 0; j < s2; j++) pr2_f_[(size_t)id * s2 + j] = pj2[j];
                     if (cfg_.scan_int8 && pr2_ != nullptr) {
-                        quantize(pj2, pr2_ + (size_t)id * s2, pr2_scale_, s2);
+                        quantize(pj2.data(), pr2_ + (size_t)id * s2, pr2_scale_, s2);
                     }
                 } else {
-                    quantize(pj2, pr2_ + (size_t)id * s2, pr2_scale_, s2);
+                    quantize(pj2.data(), pr2_ + (size_t)id * s2, pr2_scale_, s2);
                 }
                 e2_[id] = std::sqrt(std::max(0.0f, vn2 - pn2));
             }
         }
         p += nt;
     }
+    if (std::getenv("MADHAVA_DEBUG_VIOL"))
+        std::fprintf(stderr, "[apos-loop] normalize=%d vn_[0]=%.1f vn_eff_[0]=%.1f e1_[0]=%.3f\n",
+                     (int)normalize, (double)vn_[0], (double)vn_eff_[0], (double)e1_[0]);
 
     build_s_ = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - t0).count();
+
+    if (std::getenv("MADHAVA_DEBUG_BASIS")) {
+        // Orthonormality of the stage-1 basis: Gram = P1_ P1_^T must be I.
+        double max_off = 0.0, max_diag = 0.0;
+        for (int i = 0; i < s1; i++) {
+            for (int j = 0; j < s1; j++) {
+                double g = 0.0;
+                for (int k = 0; k < D; k++)
+                    g += (double)P1_[(size_t)i * D + k] * (double)P1_[(size_t)j * D + k];
+                if (i == j) max_diag = std::max(max_diag, std::fabs(g - 1.0));
+                else max_off = std::max(max_off, std::fabs(g));
+            }
+        }
+        // e(v) over the first few docs.
+        double emin = 1e30, emax = -1e30;
+        for (int i = 0; i < std::min(n_, 200); i++) {
+            emin = std::min(emin, (double)e1_[i]);
+            emax = std::max(emax, (double)e1_[i]);
+        }
+        std::fprintf(stderr, "[basis] s1=%d D=%d |diag-1|max=%.3e |off|max=%.3e  e1 in [%.3f, %.3f]\n",
+                     s1, D, max_diag, max_off, emin, emax);
+    }
 }
 
 // Cauchy-Schwarz upper bound of ⟨v,q⟩ for a vector at a given layer.
@@ -925,7 +1037,7 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     }
 
     // Query projections + residuals.
-    float pq1[256];
+    std::vector<float> pq1((size_t)s1);
     float q1s = 0;
     for (int j = 0; j < s1; j++) { pq1[j] = dot_f32(qproj, P1_ + (size_t)j * D, D); q1s += pq1[j] * pq1[j]; }
     float qr1 = std::sqrt(std::max(0.0f, qn_eff * qn_eff - q1s));
@@ -965,7 +1077,7 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     if (gpu_stage1_ready_) {
         std::lock_guard<std::mutex> lock(gpu_mu_);
         std::vector<float> gpu_scores((size_t)N);
-        if (madhava_gpu_stage1_scan(pq1, qr1, qm1, qn2, N, s1, is_l2 ? 1 : 0,
+        if (madhava_gpu_stage1_scan(pq1.data(), qr1, qm1, qn2, N, s1, is_l2 ? 1 : 0,
                                     gpu_scores.data())) {
             // The GPU returned the SORTABLE scores (cosine: -ub; L2:
             // vn²+qn2-2·ub). Recover ub for the audit and fill b1/ub_local.
@@ -988,7 +1100,7 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     if (!gpu_scan) {
 #pragma omp parallel for num_threads(wm_effective_threads(cfg_.n_threads))
         for (int i = 0; i < N; i++) {
-            float ub = ub_raw(i, 1, pq1, qr1, qm1);
+            float ub = ub_raw(i, 1, pq1.data(), qr1, qm1);
             ub_local[(size_t)i] = ub;   // disjoint index writes: thread-safe
             // Score for sorting:
             //   L2:    lb = ‖v‖² + ‖q‖² − 2·ub   (ascending = best)
@@ -1017,7 +1129,7 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     const std::vector<std::pair<float, int>>* survivors = &b1;
     std::vector<std::pair<float, int>> b2;
     if (s2 > 0) {
-        float pq2[256];
+        std::vector<float> pq2((size_t)s2);
         float q2s = 0;
         for (int j = 0; j < s2; j++) { pq2[j] = dot_f32(qproj, P2_ + (size_t)j * D, D); q2s += pq2[j] * pq2[j]; }
         float qr2 = std::sqrt(std::max(0.0f, qn_eff * qn_eff - q2s));
@@ -1029,7 +1141,7 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
 #pragma omp parallel for num_threads(wm_effective_threads(cfg_.n_threads))
         for (int i = 0; i < k1; i++) {
             int vi = b1[i].second;
-            float ub2 = ub_raw(vi, 2, pq2, qr2, qm2);
+            float ub2 = ub_raw(vi, 2, pq2.data(), qr2, qm2);
             float score2 = is_l2 ? (vn_eff_[vi] * vn_eff_[vi] + qn2 - 2.0f * ub2) : -ub2;
             b2[i] = {score2, vi};
         }
@@ -1071,7 +1183,7 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     double mod_gain = 0.0;
     if (modulation_needed) {
         // Recompute B1/B2 for the k2 survivors to build the modulated score.
-        float pq1m[256], pq2m[256];
+        std::vector<float> pq1m((size_t)s1), pq2m((size_t)s2 > 0 ? (size_t)s2 : 0);
         for (int j = 0; j < s1; j++) pq1m[j] = pq1[j];
         if (s2 > 0) for (int j = 0; j < s2; j++) pq2m[j] = 0.0f; // recompute below
         // (pq2 already available in this scope? recompute to be safe)
@@ -1093,8 +1205,8 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
 #pragma omp parallel for reduction(+:mod_gain) num_threads(wm_effective_threads(cfg_.n_threads))
         for (int i = 0; i < k2; i++) {
             int vi = survivors->at(i).second;
-            float B1 = ub_raw(vi, 1, pq1m, qr1m, qm1m);
-            float B2 = ub_raw(vi, 2, pq2m, qr2m, qm2m);
+            float B1 = ub_raw(vi, 1, pq1m.data(), qr1m, qm1m);
+            float B2 = ub_raw(vi, 2, pq2m.data(), qr2m, qm2m);
             float delta_e = (e1_[vi] - e2_[vi]) / std::max(mu, 1e-9f);
             float alpha = 1.0f / (1.0f + std::exp(-delta_e * 0.5f));
             float modulated = B1 + alpha * (B2 - B1);
@@ -1222,6 +1334,69 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
                                   [](auto& a, auto& b) { return a.first > b.first; });
             for (int i = 0; i < std::min(K, n_exact); i++) out.indices.push_back(exact[i].second);
         }
+    // ── BOUND-VIOLATION MEASUREMENT (2026-10-21) ────────────────────────────
+    //
+    // `bound_violations` used to be a literal 0 written by the speed path and
+    // never assigned anywhere else — the READMEs sold it as "the guarantee"
+    // while no code ever compared a bound against a real score. An unmeasured
+    // zero is not evidence.
+    //
+    // A violation is now MEASURED: a document the motor PRUNED (i.e. it is
+    // outside the returned top-K) whose Cauchy-Schwarz bound is contradicted
+    // by its exact score —
+    //     cosine : UB(v,q)  <  exact_cosine(v,q)      (bound below reality)
+    //     L2     : LB_L2²(v) >  exact_L2²(v)          (lower bound above reality)
+    // That is the only failure mode that can make the engine drop a true
+    // neighbour by proof. It is checked on the documents actually evaluated by
+    // the exact post-filter (the survivors), plus the K returned, which is the
+    // set where a false proof could have changed the answer. Checking all N
+    // would require an exact score per document — the cost the pruned-filter
+    // exists to avoid — so the count is explicitly scoped: violations among
+    // the evaluated set, 0 meaning "no contradiction was found where the motor
+    // committed a decision".
+    {
+        long long viol = 0;
+        for (int i = 0; i < out.k3; ++i) {
+            // `exact` holds (score, doc) in evaluation order for pf_eff runs.
+            if (i >= (int)exact.size()) break;
+            const int vi = exact[i].second;
+            if (vi < 0 || vi >= N) continue;
+            const float ex = exact[i].first;
+            const float ub_v = ub_local[(size_t)vi];
+            if (is_l2) {
+                // SPACE NOTE (2026-10-21). The L2² lower bound must be built
+                // from ‖v‖² IN THE SAME SPACE exact_score() measures. On the
+                // float32 path build_float32() re-quantizes the corpus into
+                // base_ (the uint8 the exact score reads) while vn_eff_ may
+                // hold the norm of the NORMALIZED float vector (≈1). Mixing
+                // them produced a bound below the true score for any document
+                // whose uint8 norm is not 1 — a false "violation" that was, in
+                // fact, a real inconsistency in the certificate's arithmetic.
+                // The norm is taken from base_ here so both sides describe the
+                // same vector.
+                float vn2_base = 0.0f;
+                const uint8_t* vraw = base_ + (size_t)vi * D;
+                for (int j = 0; j < D; ++j) {
+                    const float f = (float)vraw[j];
+                    vn2_base += f * f;
+                }
+                const float lb_v = vn2_base + qn2 - 2.0f * ub_v;
+                if (lb_v > ex + 1e-4f * (1.0f + std::fabs(ex))) {
+                    ++viol;
+                    if (std::getenv("MADHAVA_DEBUG_VIOL"))
+                        std::fprintf(stderr, "[viol] doc=%d lb=%.1f ex=%.1f ub=%.1f vn2=%.1f qn2=%.1f "
+                                             "e1=%.1f qr1=%.1f pn1_derived=%.1f\n",
+                                     vi, lb_v, ex, ub_v, vn2_base, qn2,
+                                     (double)e1_[vi], (double)qr1,
+                                     (double)(vn2_base - e1_[vi]*(double)e1_[vi]));
+                }
+            } else {
+                if (ub_v < ex - 1e-4f * (1.0f + std::fabs(ex))) ++viol;
+            }
+        }
+        out.bound_violations = viol;
+    }
+
     } else {
         std::partial_sort(ranked.begin(), ranked.begin() + std::min(K, k2), ranked.end());
         for (int i = 0; i < std::min(K, k2); i++) out.indices.push_back(ranked[i].second);
@@ -1253,10 +1428,47 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     out.audit_ubs.clear();
     out.audit_residuals.clear();
     out.audit_l2_lbs.clear();
+
     if ((int)out.indices.size() >= K && K > 0) {
-        float worst = exact_score(out.indices[K - 1], query);  // GLOBAL K-th
+        //
+        // GLOBAL K-th THRESHOLD (BUG FIX 2026-10-21).
+        //
+        // The comment above has said "the threshold is exact_score of the K-th
+        // result" since 1.9.0, and the code has used `out.indices[K-1]` — which
+        // is the K-th of the RETURNED list, i.e. of the POST-FILTER POOL, not
+        // of the corpus. When the pool misses a true neighbour (k1_fraction
+        // pruning), the pool's K-th score is LOWER than the global K-th, and
+        // every document whose bound falls between the two gets certified as
+        // "provably outside the top-K" while actually being inside it. The
+        // certificate described the pool, not the search.
+        //
+        // The global K-th is computed here by an exact scan over ALL N when the
+        // post-filter did not already cover the corpus. That is O(N·d), the
+        // price of a certificate that is true about the whole corpus. It runs
+        // only when a certificate is requested (search_audited / commitment),
+        // never on the plain search() path.
+        float worst = exact_score(out.indices[K - 1], query);
         out.audit_threshold = worst;
-        // Parallel O(N) bound scan (the audit hook). Reuses the UB already
+        if (out.k3 < N) {
+            // Global K-th exact score over the WHOLE corpus.
+            //
+            // A partial/nth_element over N floats needs N*4 bytes of scratch,
+            // acceptable on a certificate path (never on plain search). After
+            // nth_element the (K-1)-th slot IS the K-th best exact score, so the
+            // certificate describes the corpus rather than the post-filter pool.
+            std::vector<float> all((size_t)N);
+#pragma omp parallel for num_threads(wm_effective_threads(cfg_.n_threads))
+            for (int i = 0; i < N; ++i) all[(size_t)i] = exact_score(i, query);
+            if (is_l2) std::nth_element(all.begin(), all.begin() + (K - 1), all.end());
+            else std::nth_element(all.begin(), all.begin() + (K - 1), all.end(),
+                                  [](float a, float b) { return a > b; });
+            worst = all[(size_t)(K - 1)];
+            out.audit_threshold = worst;
+            if (std::getenv("MADHAVA_DEBUG_THR"))
+                std::fprintf(stderr, "[thr] k3=%d N=%d pool_kth=%.1f global_kth=%.1f\n",
+                             out.k3, N, (double)exact_score(out.indices[K-1], query), (double)worst);
+        }
+// Parallel O(N) bound scan (the audit hook). Reuses the UB already
         // computed in pass 1 (ub_local, the Fusion-B win). When collect_audit
         // is FALSE (2026-09-06), the search still COUNTS the exclusions
         // (pruned_by_bound stays exact) but does NOT materialize
