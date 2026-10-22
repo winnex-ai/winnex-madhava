@@ -68,3 +68,26 @@ testpaths = ["tests/python"]
 
 [tool.setuptools]
 package-dir = { "" = "python" }
+
+[tool.cibuildwheel]
+# Alvos explícitos cp310-cp313 (padrão de winnex-nano e winnex-xfactor).
+build = "cp310-* cp311-* cp312-* cp313-*"
+skip = "*-musllinux_*"
+test-command = "python -c \"import winnex_madhava; print(winnex_madhava.__version__)\""
+test-requires = ["numpy"]
+build-verbosity = 1
+
+[tool.cibuildwheel.linux]
+# A imagem padrão do cibuildwheel (manylinux2014 com um tag fixo) deixou de
+# existir no registry:
+#   Error response from daemon: No such image:
+#   quay.io/pypa/manylinux2014_x86_64:2025.04.19-1
+# Isso derrubou o publish da 1.9.18. manylinux_2_28 existe e traz GCC >= 12.
+manylinux-x86_64-image = "manylinux_2_28"
+# Só x86_64: 4 ABIs x 2 arquiteturas estoura o tempo do job.
+archs = ["x86_64"]
+
+[tool.cibuildwheel.macos]
+archs = ["arm64"]
+
+[tool.cibuildwheel.windows]
