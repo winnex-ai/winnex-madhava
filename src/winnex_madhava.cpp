@@ -1381,7 +1381,24 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
                     vn2_base += f * f;
                 }
                 const float lb_v = vn2_base + qn2 - 2.0f * ub_v;
-                if (lb_v > ex + 1e-4f * (1.0f + std::fabs(ex))) {
+                //
+                // TOLERANCE (2026-10-21). The bound and the exact score are
+                // both float32 sums over D terms, computed in different orders
+                // with different accumulators (AVX2 lanes vs scalar, int8 scale
+                // multiply vs direct), so they disagree in the last bits. The
+                // tolerance must cover that disagreement or every measurement
+                // reports float noise as a proof failure.
+                //
+                // The previous 1e-4 relative floor is too tight for L2² because
+                // the quantity is a sum of D squares: with values in [0,255] a
+                // single L2² reaches ~1e6, and 0.01% of that is ~100 while the
+                // accumulated float error over 64-128 terms can exceed it.
+                // Derived from the actual operation instead: a sum of n terms
+                // has worst-case relative error n·eps, so the floor is
+                // D·FLT_EPSILON·|ex| plus a small absolute term for ex near 0.
+                const float tol = (float)D * std::numeric_limits<float>::epsilon()
+                                * (1.0f + std::fabs(ex)) + 1e-3f;
+                if (lb_v > ex + tol) {
                     ++viol;
                     if (std::getenv("MADHAVA_DEBUG_VIOL"))
                         std::fprintf(stderr, "[viol] doc=%d lb=%.1f ex=%.1f ub=%.1f vn2=%.1f qn2=%.1f "
@@ -1391,7 +1408,10 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
                                      (double)(vn2_base - e1_[vi]*(double)e1_[vi]));
                 }
             } else {
-                if (ub_v < ex - 1e-4f * (1.0f + std::fabs(ex))) ++viol;
+                // Same float-error floor as the L2 branch above.
+                const float tol_c = (float)D * std::numeric_limits<float>::epsilon()
+                                  * (1.0f + std::fabs(ex)) + 1e-3f;
+                if (ub_v < ex - tol_c) ++viol;
             }
         }
         out.bound_violations = viol;
