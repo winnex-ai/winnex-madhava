@@ -1401,11 +1401,14 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
                 if (lb_v > ex + tol) {
                     ++viol;
                     if (std::getenv("MADHAVA_DEBUG_VIOL"))
-                        std::fprintf(stderr, "[viol] doc=%d lb=%.1f ex=%.1f ub=%.1f vn2=%.1f qn2=%.1f "
-                                             "e1=%.1f qr1=%.1f pn1_derived=%.1f\n",
-                                     vi, lb_v, ex, ub_v, vn2_base, qn2,
+                        std::fprintf(stderr, "[viol] doc=%d lb=%.6f ex=%.6f tol=%.6f "
+                                             "excess=%.6f ub=%.6f vn2=%.6f qn2=%.6f "
+                                             "e1=%.6f qr1=%.6f n=%d D=%d quant=%d\n",
+                                     vi, (double)lb_v, (double)ex, (double)tol,
+                                     (double)(lb_v - ex), (double)ub_v,
+                                     (double)vn2_base, (double)qn2,
                                      (double)e1_[vi], (double)qr1,
-                                     (double)(vn2_base - e1_[vi]*(double)e1_[vi]));
+                                     N, D, (int)cfg_.quant);
                 }
             } else {
                 // Same float-error floor as the L2 branch above.

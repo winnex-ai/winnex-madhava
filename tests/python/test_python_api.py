@@ -102,6 +102,26 @@ def test_quant_none_matches_exact():
     q = X[0].astype(np.float32)
     res = eng.search(q)
     exact = eng.search_exact(q)
+    # Diagnóstico embutido: se a violação disparar, o log do CI mostra os
+    # valores exatos em vez de só "assert 1 == 0". O bound e o score exato são
+    # somas float32 de D termos calculadas em ordens diferentes (AVX2 vs
+    # escalar, int8 vs direto); a tolerância tem de cobrir essa diferença sem
+    # esconder violação real. Já ocorreu de passar localmente e falhar no wheel
+    # manylinux, então o teste imprime o suficiente para diagnosticar sem
+    # reprodução local.
+    if res.bound_violations:
+        import subprocess, sys, os
+        print(f"DIAGNOSTICO: viol={res.bound_violations} k1={res.k1} k3={res.k3} "
+              f"N={eng.num_vectors()} top5={list(res.indices)} "
+              f"exact5={list(exact.indices)}")
+        env = dict(os.environ, MADHAVA_DEBUG_VIOL="1")
+        subprocess.run([sys.executable, "-c",
+            "import numpy as np, winnex_madhava as wm;"
+            "rng=np.random.default_rng(11);"
+            "X=rng.integers(0,256,size=(3000,64),dtype=np.uint8);"
+            "e=wm.build_engine(X,dim=64,metric='l2',quant='none',stage1_dim=32,"
+            "stage2_dim=0,k=5,postfilter=True);"
+            "e.search(X[0].astype(np.float32))"], env=env)
     assert res.bound_violations == 0
     assert res.indices[0] == exact.indices[0] == 0
 
