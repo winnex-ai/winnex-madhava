@@ -1382,22 +1382,33 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
                 }
                 const float lb_v = vn2_base + qn2 - 2.0f * ub_v;
                 //
-                // TOLERANCE (2026-10-21). The bound and the exact score are
-                // both float32 sums over D terms, computed in different orders
-                // with different accumulators (AVX2 lanes vs scalar, int8 scale
-                // multiply vs direct), so they disagree in the last bits. The
-                // tolerance must cover that disagreement or every measurement
-                // reports float noise as a proof failure.
+                // TOLERANCE (2026-10-21) — derived from the CANCELLATION, not
+                // from |ex|.
                 //
-                // The previous 1e-4 relative floor is too tight for L2² because
-                // the quantity is a sum of D squares: with values in [0,255] a
-                // single L2² reaches ~1e6, and 0.01% of that is ~100 while the
-                // accumulated float error over 64-128 terms can exceed it.
-                // Derived from the actual operation instead: a sum of n terms
-                // has worst-case relative error n·eps, so the floor is
-                // D·FLT_EPSILON·|ex| plus a small absolute term for ex near 0.
-                const float tol = (float)D * std::numeric_limits<float>::epsilon()
-                                * (1.0f + std::fabs(ex)) + 1e-3f;
+                // lb_v = vn² + qn² − 2·ub is a subtraction of two numbers of
+                // the same magnitude whose result is near zero whenever v and q
+                // are close. That is catastrophic cancellation, and the error
+                // is governed by the magnitude of the OPERANDS, not of the
+                // result. Measured on the CI failure (manylinux wheel,
+                // D=64, v = q):
+                //
+                //     vn² = qn² = 1,374,547.0    ub = 1,374,546.875
+                //     lb = 0.25   exact = 0.0    tol(ex-based) = 0.001
+                //
+                // 0.25 is exactly one ULP of 2·vn² = 2,749,094 in float32. No
+                // tolerance computed from |ex| can cover it, because ex is
+                // zero. The floor must be the ULP of the operands:
+                //
+                //     tol = k · FLT_EPSILON · (vn² + qn²)
+                //
+                // with a small factor k to absorb a few roundings (the two
+                // squares, the doubling, the subtraction). k=4 covers one ULP
+                // of 2(vn²+qn²) with margin, and still rejects a real violation
+                // by orders of magnitude: the raw_norm defect produced
+                // lb−ex ≈ 1.2e6 on operands of ~3e6, i.e. ~40% of the operand
+                // magnitude, against a tolerance of ~1.4.
+                const float tol = 4.0f * std::numeric_limits<float>::epsilon()
+                                * (vn2_base + qn2 + 1.0f) + 1e-3f;
                 if (lb_v > ex + tol) {
                     ++viol;
                     if (std::getenv("MADHAVA_DEBUG_VIOL"))
@@ -1411,7 +1422,10 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
                                      N, D, (int)cfg_.quant);
                 }
             } else {
-                // Same float-error floor as the L2 branch above.
+                // Cosine has no cancellation: ub and ex are both inner products
+                // of the same magnitude range, so an |ex|-relative floor is the
+                // right one here (unlike the L2 branch, where the subtraction
+                // of two large near-equal numbers dominates the error).
                 const float tol_c = (float)D * std::numeric_limits<float>::epsilon()
                                   * (1.0f + std::fabs(ex)) + 1e-3f;
                 if (ub_v < ex - tol_c) ++viol;
