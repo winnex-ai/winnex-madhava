@@ -36,7 +36,14 @@ jobs:
             abi: cp312
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth 0 + tags: a versao vem da tag git (setuptools-scm). O
+      # checkout raso NAO traz tags, entao o build derivava 1.9.17 (o release
+      # anterior) e o PyPI rejeitava com "400 File already exists" - o publish
+      # da 1.9.18 falhou por isso, com todos os wheels construidos com sucesso.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -64,6 +71,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - name: Build source distribution
         run: pipx run build --sdist
       - uses: actions/upload-artifact@v4
