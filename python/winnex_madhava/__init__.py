@@ -82,7 +82,19 @@ recall_at_k = _native.recall_at_k
 ndcg_at_k = _native.ndcg_at_k
 read_bigann_groundtruth = _native.read_bigann_groundtruth
 
-__version__ = "1.9.15"
+# __version__ vem dos metadados do pacote (tag git via scikit-build-core),
+# nunca de um literal. O literal dizia 1.9.15 enquanto o pacote publicado era
+# 1.9.18 — três versões de atraso, e silencioso: o build passa e o pacote
+# anuncia a versão errada. Mesmo padrão de winnex-nano e winnex-xfactor.
+try:
+    from importlib.metadata import version as _pkg_version, PackageNotFoundError as _PNF
+    try:
+        __version__ = _pkg_version("winnex-madhava")
+    except _PNF:
+        __version__ = "0.0.0+local"
+except Exception:  # pragma: no cover
+    __version__ = "0.0.0+local"
+
 __all__ = [
     "Config",
     "SearchResult",
