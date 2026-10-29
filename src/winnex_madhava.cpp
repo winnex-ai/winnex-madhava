@@ -446,11 +446,24 @@ MadhavaL2::MadhavaL2(const Config& cfg) : cfg_(cfg) {
     // matematico (nao existem mais de dim direcoes ortogonais), e o valor
     // efetivo fica VISIVEL em config(). O chamador que precisa saber le' o
     // config() — que agora reflete o valor aplicado, nao o pedido.
+    //
+    // SO' stage1. O clamp de stage2_dim existia na primeira versao e foi
+    // REMOVIDO porque DEGRADAVA o cascade: com dim=64 e os defaults
+    // (s1=64, s2=128), clampar s2 para 64 o deixava igual a s1, matando a
+    // segunda etapa. Medido no 1.9.20 ORIGINAL, com s2=128 > dim=64:
+    //
+    //   s1  s2   viol  escopo
+    //   64  128     0  exact_global    <- o original JA estava correto
+    //   64   64     0  exact_global
+    //   32   64     0  exact_global
+    //   64    0     0  exact_global
+    //
+    // Ou seja: stage2_dim > dim NAO quebra o bound (o build trata o excesso
+    // internamente). O defeito so' existe em stage1_dim, onde o rank extra
+    // entra no laco que acumula pn1 e superestima UB. Clampar stage2 era
+    // "corrigir" um caso que nao estava quebrado e quebrar o caso comum.
     if (cfg_.stage1_dim > cfg_.dim) {
         cfg_.stage1_dim = cfg_.dim;
-    }
-    if (cfg_.stage2_dim > cfg_.dim) {
-        cfg_.stage2_dim = cfg_.dim;
     }
     if (cfg_.stage2_dim > 0 && cfg_.stage2_dim <= cfg_.stage1_dim) {
         // Keep the engine functional: promote stage2 to stage1+1 (bounded by dim).
