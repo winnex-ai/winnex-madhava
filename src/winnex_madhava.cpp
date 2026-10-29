@@ -32,6 +32,8 @@
 #include <random>
 #include <chrono>
 #include <limits>
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 #ifdef _OPENMP
@@ -419,7 +421,37 @@ std::vector<std::vector<int>> read_bigann_groundtruth(const std::string& path, i
 // Engine
 // ---------------------------------------------------------------------------
 MadhavaL2::MadhavaL2(const Config& cfg) : cfg_(cfg) {
-    // Sanity: stage2_dim must be > stage1_dim for a meaningful cascade.
+    // FIX (2026-10-29): stage > dim invalida o bound — CLAMP, nao excecao.
+    //
+    // O bound de Cauchy-Schwarz exige que P tenha LINHAS ORTONORMAIS. Em R^D
+    // existem no maximo D vetores ortonormais; pedir stage > dim obriga o MGS a
+    // produzir linhas linearmente dependentes. O loop do build soma
+    // pn1 = sum_j <v, P_j>^2 sobre TODAS as linhas, contando a mesma energia
+    // mais de uma vez -> e1 = sqrt(1 - pn1) subestimado -> UB SUPERESTIMADO.
+    //
+    // Medido num corpus de 64 dimensoes (audit_exhaustive, 512 docs):
+    //   stage1_dim= 32 (<= D)  viol=  0   UB/exato mediano =  -     (valido)
+    //   stage1_dim= 64 (== D)  viol=  0   UB/exato mediano = 1.002
+    //   stage1_dim=128 ( > D)  viol=269   UB/exato mediano = 2.008  <- quebrado
+    //   stage1_dim=512 ( > D)  viol=267   UB/exato mediano = 1.895
+    //
+    // POR QUE CLAMP E NAO THROW (corrigido na mesma sessao): a primeira versao
+    // lancava invalid_argument, e a suite do proprio motor quebrou 4 testes —
+    // porque os DEFAULTS do Config sao stage1=64 / stage2=128, e qualquer
+    // chamador com dim < 128 caia na excecao so' por nao mexer nos defaults.
+    // Tornar a biblioteca inutilizavel em dimensao baixa nao e' "falhar alto";
+    // e' quebrar o caso comum.
+    //
+    // O clamp aqui NAO e' degradacao silenciosa: stage > dim nao tem significado
+    // matematico (nao existem mais de dim direcoes ortogonais), e o valor
+    // efetivo fica VISIVEL em config(). O chamador que precisa saber le' o
+    // config() — que agora reflete o valor aplicado, nao o pedido.
+    if (cfg_.stage1_dim > cfg_.dim) {
+        cfg_.stage1_dim = cfg_.dim;
+    }
+    if (cfg_.stage2_dim > cfg_.dim) {
+        cfg_.stage2_dim = cfg_.dim;
+    }
     if (cfg_.stage2_dim > 0 && cfg_.stage2_dim <= cfg_.stage1_dim) {
         // Keep the engine functional: promote stage2 to stage1+1 (bounded by dim).
         cfg_.stage2_dim = std::min(cfg_.stage1_dim + 1, cfg_.dim);
