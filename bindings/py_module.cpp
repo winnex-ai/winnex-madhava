@@ -119,6 +119,19 @@ PYBIND11_MODULE(_winnex_madhava, m) {
                  return n;
              },
              py::arg("arr"))
+        // Anexa o corpus SEM reprojetar — para o caminho load_index().
+        // Ver attach_float32() no header: build_float32 custa 7.77 s onde
+        // load_index custa 0.04 s, e chamar o primeiro antes do segundo anula
+        // o ganho do artefato.
+        .def("attach_float32",
+             [](MadhavaL2& self, py::array_t<float, py::array::c_style | py::array::forcecast> arr) {
+                 auto info = arr.request();
+                 if (info.ndim != 2)
+                     throw std::runtime_error("attach_float32: expected 2D (n, dim)");
+                 return self.attach_float32((const float*)info.ptr,
+                                            (int)info.shape[0]);
+             },
+             py::arg("arr"))
         .def("set_basis",
              [](MadhavaL2& self, py::array_t<float, py::array::c_style | py::array::forcecast> p1,
                  py::object p2) {

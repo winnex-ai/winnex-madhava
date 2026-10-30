@@ -343,6 +343,21 @@ public:
     // (a uint8 corpus destroys the manifold the PCA needs to align with).
     void build_float32(const float* raw_base, int n);
 
+    // ANEXA o corpus float32 SEM construir as projeções.
+    //
+    // Existe para o caminho load_index(): o índice em disco já traz P1_/P2_,
+    // pr1_f_/pr2_f_, e1_/e2_, vn_/vn_eff_ prontos. O que falta para a busca
+    // funcionar é só `base_` — o corpus uint8 que o postfilter lê em
+    // exact_score(). `build_float32` faz isso E recalcula todas as projeções,
+    // que é exatamente o trabalho que o load_index traz do arquivo.
+    //
+    // Medido (V=151936, d=2560): build_float32 = 7.77 s, load_index = 0.04 s.
+    // Chamar build_float32 antes de load_index anula o ganho do artefato: o
+    // EngineTokenizer rendia 1.24x em vez de ~174x.
+    //
+    // Retorna false (sem anexar nada) se o corpus for inválido.
+    bool attach_float32(const float* raw_base, int n);
+
     // UB Width: supply the projection basis explicitly (e.g. computed by the
     // X-Factor, or by a robust numpy `eigh` over the corpus covariance).
     // P1 must be [stage1_dim × dim] orthonormal rows; if stage2_dim > 0, P2
@@ -444,6 +459,9 @@ public:
     const float* residuals2() const { return e2_; } // [n] or nullptr
 
 private:
+    // Quantiza float32 -> uint8 no buffer owned. Extraído de build_float32
+    // para que attach_float32() possa reaproveitar sem reprojetar nada.
+    void quantize_float32_to_u8(const float* raw_base, int n);
     // Cauchy-Schwarz upper bound of ⟨v,q⟩ for a vector (Stage-1/2 score).
     float ub_raw(int idx, int layer, const float* pq, float qr, float qm) const;
     // Exact metric score between a raw vector and a float query.

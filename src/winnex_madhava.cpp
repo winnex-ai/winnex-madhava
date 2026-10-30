@@ -552,15 +552,10 @@ void MadhavaL2::set_basis(const float* P1, const float* P2) {
     }
 }
 
-void MadhavaL2::build_float32(const float* raw_base, int n) {
-    // Keep the float32 buffer alive for the PCA path (and to satisfy the
-    // caller-owned-data contract, the caller keeps the array; we copy so the
-    // basis construction below can use a stable pointer even for uint8 builds).
+void MadhavaL2::quantize_float32_to_u8(const float* raw_base, int n) {
     const int D = cfg_.dim;
-    if (corpus_f32_ == nullptr) {
-        corpus_f32_ = new float[(size_t)n * D];
-    }
-    std::memcpy(corpus_f32_, raw_base, (size_t)n * D * sizeof(float));
+    delete[] corpus_u8_owned_;
+    corpus_u8_owned_ = new uint8_t[(size_t)n * D];
 
     // The build() path expects uint8 for the metric evaluation (vn_, exact
     // cosine over uint8). For the float32 path we re-quantize to uint8 using
@@ -634,7 +629,43 @@ void MadhavaL2::build_float32(const float* raw_base, int n) {
             }
         }
     }
+}
+
+void MadhavaL2::build_float32(const float* raw_base, int n) {
+    // Keep the float32 buffer alive for the PCA path (and to satisfy the
+    // caller-owned-data contract, the caller keeps the array; we copy so the
+    // basis construction below can use a stable pointer even for uint8 builds).
+    const int D = cfg_.dim;
+    if (corpus_f32_ == nullptr) {
+        corpus_f32_ = new float[(size_t)n * D];
+    }
+    std::memcpy(corpus_f32_, raw_base, (size_t)n * D * sizeof(float));
+    quantize_float32_to_u8(raw_base, n);
     build(corpus_u8_owned_, n);
+}
+
+bool MadhavaL2::attach_float32(const float* raw_base, int n) {
+    // ANEXA o corpus float32 sem construir as projecoes.
+    //
+    // O corpus_f32_ TEM de ser mantido. Sem ele, exact_score() cai no ramo
+    // uint8 (base_), que e' um espaco COM PERDA: medido com Qwen3-4B
+    // (V=151.936, d=2560), 40% das consultas devolvem top-5 diferente do
+    // caminho build_float32 — as posicoes 2..k trocam de lugar. O top-1
+    // coincide (a query e' o proprio vetor), o que esconde o defeito de quem
+    // so olha o primeiro id.
+    //
+    // O custo da copia e' ~5% do build_float32: o que domina os 7.4 s sao as
+    // projecoes Stage-1/Stage-2 e a base PCA, e essas vem prontas do
+    // load_index(). Pagar a copia preserva a EXATIDAO e ainda entrega o ganho.
+    const int D = cfg_.dim;
+    if (raw_base == nullptr || n <= 0 || D <= 0) return false;
+    if (corpus_f32_ == nullptr) corpus_f32_ = new float[(size_t)n * D];
+    std::memcpy(corpus_f32_, raw_base, (size_t)n * D * sizeof(float));
+    quantize_float32_to_u8(corpus_f32_, n);
+    base_ = corpus_u8_owned_;
+    n_ = n;
+    built_ = false;   // as projecoes vem do load_index()
+    return true;
 }
 
 MadhavaL2::~MadhavaL2() {
