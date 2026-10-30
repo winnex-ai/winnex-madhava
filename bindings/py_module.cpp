@@ -83,7 +83,9 @@ PYBIND11_MODULE(_winnex_madhava, m) {
         .def_readonly("audit_ubs", &SearchResult::audit_ubs)
         .def_readonly("audit_l2_lbs", &SearchResult::audit_l2_lbs)
         .def_readonly("audit_residuals", &SearchResult::audit_residuals)
-        .def_readonly("recall_guarantee", &SearchResult::recall_guarantee);
+        .def_readonly("recall_guarantee", &SearchResult::recall_guarantee)
+        .def_readonly("recall_guarantee_basis", &SearchResult::recall_guarantee_basis)
+        .def_readonly("collect_audit_used", &SearchResult::collect_audit_used);
 
     py::class_<MadhavaL2>(m, "MadhavaL2")
         .def(py::init<const Config&>())
@@ -186,6 +188,29 @@ PYBIND11_MODULE(_winnex_madhava, m) {
                  d["bound_pairs"] = r.base.bound_pairs;
                  d["audit_candidates"] = r.audit_candidates;
                  d["audit_excluded"] = r.audit_excluded;
+                 // SCOPE OF THE NUMBERS ON THIS RECORD (2026-10-30).
+                 //
+                 // search() is now GATED on collect_audit: the plain path does
+                 // not pay the O(N·d) global-threshold scan, while this path
+                 // (search_audited / commitment) does. So the same field names
+                 // coming from the two paths describe DIFFERENT scopes:
+                 //
+                 //   field                     | search()  | here
+                 //   --------------------------|-----------|------------------
+                 //   audit_threshold           | pool_kth  | global_kth
+                 //   audit_excluded /          | pool only | whole corpus
+                 //     pruned_by_bound         |           |
+                 //   pruned_by_prefilter       | global    | global
+                 //
+                 // Derived from observed state (k3 vs N), not asserted. Comparing
+                 // `search_audited().audit_excluded` against
+                 // `search().pruned_by_bound` is invalid whenever the two scopes
+                 // differ — which is the normal case after this change. The labels
+                 // make that explicit instead of leaving it implicit.
+                 d["audit_threshold_basis"] =
+                     (r.base.k3 >= (int)r.base.bound_pairs) ? "global" : "pool";
+                 d["pruned_by_bound_basis"] =
+                     (r.base.k3 >= (int)r.base.bound_pairs) ? "global" : "pool";
                  py::list audit;
                  for (const auto& rec : r.audit) {
                      py::dict rd;
@@ -226,9 +251,28 @@ PYBIND11_MODULE(_winnex_madhava, m) {
                  d["latency_ms"] = c.latency_ms;
                  d["total_excluded_count"] = c.total_excluded_count;
                  d["global_threshold"] = c.global_threshold;
-                 // Recall scope of THIS commitment (2026-09-03): "exact_global"
-                 // only when the underlying search() re-scored all N (k3 == N).
+                 // WHY the count is what it is (2026-10-30). `total_excluded_count
+                 // = 0` has two opposite causes — a bound too loose to prove
+                 // anything, or a fixed cutoff that discarded the corpus first —
+                 // and only the pair distinguishes them. Measured (20k x 384d,
+                 // stage1=64): bound=0, prefilter=19,800.
+                 d["pruned_by_bound"] = c.pruned_by_bound;
+                 d["pruned_by_prefilter"] = c.pruned_by_prefilter;
+                 // The denominator: "19,800 discarded" means nothing without N
+                 // and without how many the exact post-filter actually scored.
+                 d["n_corpus"] = c.n_corpus;
+                 d["exact_scored"] = c.exact_scored;
+                 // SCOPE OF THE NUMBERS (2026-10-30). See search_audited's
+                 // audit_threshold_basis for the full table. Here the scope is
+                 // always "global" because the commitment requests the audit —
+                 // it is stated explicitly so a reader never has to know that.
+                 d["pruned_by_bound_basis"] = "global";
+                 d["pruned_by_prefilter_basis"] = "global";
+                 // Recall scope of THIS commitment: "exact_global" either because
+                 // the underlying search() re-scored all N, or because the bound
+                 // PROVED >= N-K exclusions (2026-10-30). `_basis` says which.
                  d["recall_guarantee"] = c.recall_guarantee;
+                 d["recall_guarantee_basis"] = c.recall_guarantee_basis;
                  py::list samples;
                  for (const auto& s : c.sampled_records) {
                      py::dict sd;

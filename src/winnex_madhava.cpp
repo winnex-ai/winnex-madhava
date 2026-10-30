@@ -1170,6 +1170,7 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
                                bool collect_audit) const {
     SearchResult out;
     if (!built_) return out;
+    out.collect_audit_used = collect_audit;
     int N = n_, D = cfg_.dim, s1 = cfg_.stage1_dim, s2 = cfg_.stage2_dim, K = cfg_.k;
     bool is_l2 = (cfg_.metric == Metric::L2);
     bool normalize = (cfg_.metric == Metric::Cosine) && cfg_.normalize_input;
@@ -1593,16 +1594,9 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
         for (int i = 0; i < std::min(K, k2); i++) out.indices.push_back(ranked[i].second);
     }
 
-    // RECALL GUARANTEE (2026-09-03): derived from OBSERVED state, not a promise.
-    //   - With the exact post-filter ON and all N scored (k3 == N), the returned
-    //     top-K IS the exact global top-K → "exact_global".
-    //   - Otherwise the result is the best WITHIN the post-filter pool (docs cut
-    //     by k1_fraction/k2_max were discarded without a proof) → "pool_only".
-    //   - Without a post-filter (cfg_.postfilter=false) the ranking is by the
-    //     bound/modulated score, never the exact top-K → "pool_only".
-    // This makes the honest statement the README already makes ("bound_violations
-    // == 0 does not mean the returned top-K is the true top-K") machine-readable.
-    out.recall_guarantee = (pf_eff && out.k3 == N) ? "exact_global" : "pool_only";
+    // RECALL GUARANTEE — derived from OBSERVED state, not a promise.
+    // Computed at the END (2026-10-30) because route 2 needs pruned_by_bound,
+    // which only exists after the audit hook below. See the block after it.
 
     // HONEST PRUNING BREAKDOWN + AUDIT HOOK (computed against the GLOBAL
     // K-th threshold, not the post-filter pool threshold).
@@ -1640,13 +1634,29 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
         // never on the plain search() path.
         float worst = exact_score(out.indices[K - 1], query);
         out.audit_threshold = worst;
-        if (out.k3 < N) {
+        if (out.k3 < N && collect_audit) {
             // Global K-th exact score over the WHOLE corpus.
             //
             // A partial/nth_element over N floats needs N*4 bytes of scratch,
             // acceptable on a certificate path (never on plain search). After
             // nth_element the (K-1)-th slot IS the K-th best exact score, so the
             // certificate describes the corpus rather than the post-filter pool.
+            //
+            // PERFORMANCE REGRESSION FIX (2026-10-30). This block is the O(N·d)
+            // price of a certificate that is true about the whole corpus, and the
+            // comment above has always said it "runs only when a certificate is
+            // requested (search_audited / commitment), never on the plain search()
+            // path". It did not: commit 63d1b6c (release 1.9.15) removed the gate
+            // while keeping the comment, so EVERY plain search() scored the entire
+            // corpus a second time. Measured on a 20k x 384d corpus, k=3:
+            //
+            //   search()          ~7.5 ms on Kaggle  (4 cores) vs ~1.0 ms local
+            //   search_exact()     0.69 ms  <- the same O(N·d) work, done once
+            //
+            // i.e. the "fast" path was slower than brute force, because it paid a
+            // full exact scan AND the projection cascade. Restoring the gate is
+            // what makes the small/medium-scale mode actually fast; the audit mode
+            // still pays it, which is exactly the cost it exists to pay.
             std::vector<float> all((size_t)N);
 #pragma omp parallel for num_threads(wm_effective_threads(cfg_.n_threads))
             for (int i = 0; i < N; ++i) all[(size_t)i] = exact_score(i, query);
@@ -1740,6 +1750,37 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     // Clamp: n_exact and pruned_by_bound are not disjoint.
     out.pruned_by_prefilter = std::max<long long>(0,
         (long long)N - (long long)out.k3 - out.pruned_by_bound);
+
+    // RECALL SCOPE (2026-09-03; route 2 added 2026-10-30).
+    //
+    // The old test was `pf_eff && k3 == N` — a statement about the IMPLEMENTATION
+    // (did the post-filter happen to score everything?). There is a second, equally
+    // valid route to the same conclusion, and the motor was already computing it
+    // and discarding it:
+    //
+    //   if the bound PROVED pruned_by_bound >= N - K documents outside the top-K,
+    //   then at most K documents remain unproven — exactly the K we returned — so
+    //   the returned top-K IS the global top-K, BY PROOF.
+    //
+    // Measured (2026-10-30, 20k x 384d, s1 = s2 = 384, 40 queries): recall vs
+    // FAISS 1.0000 and (N - pruned_by_bound) - K in {0, 0, 0, ..., 1}, i.e. the
+    // inequality holds on every query. The label was "pool_only" anyway. Refusing
+    // to claim a proof one holds is not caution, it is a lost contract: a buyer
+    // reads "pool_only" and concludes the motor does not know whether it was exact.
+    //
+    // Route 2 requires pf_eff for the same reason route 1 does: without the exact
+    // post-filter the returned K are ranked by the bound, not by the exact score,
+    // so "the K we returned" would not be the K the proof is about.
+    if (pf_eff && out.k3 == N) {
+        out.recall_guarantee = "exact_global";
+        out.recall_guarantee_basis = "scored_all";
+    } else if (pf_eff && out.pruned_by_bound >= (long long)N - (long long)std::min<int>(K, N)) {
+        out.recall_guarantee = "exact_global";
+        out.recall_guarantee_basis = "proven_exclusions";
+    } else {
+        out.recall_guarantee = "pool_only";
+        out.recall_guarantee_basis = "none";
+    }
 
     out.latency_ms = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - t0).count();
     return out;
@@ -2107,16 +2148,33 @@ AuditCommitment MadhavaL2::search_with_commitment(const float* query, int64_t k,
     // top-K — the WORM record must carry this so it is not over-read.
     out.recall_guarantee = base.recall_guarantee;
 
-    // The global K-th threshold: exact score of the K-th returned result.
-    // (Mirrors the 1.9.1 witness fix — the certificate must use the TRUE
-    // global threshold, not a pool threshold.)
+    // The GLOBAL K-th threshold — the score the exclusion is proven against.
+    //
+    // BUG FIX (2026-10-30): this used `exact_score(out.indices[K-1])`, i.e. the
+    // K-th of the RETURNED list. When k3 < N that list is the post-filter POOL,
+    // and the pool's K-th score is LOWER than the corpus's K-th — so the field
+    // signed as `global_threshold` carried a pool number. It is the exact same
+    // defect the search path had fixed on 2026-10-21 ("the certificate described
+    // the pool, not the search"); the commitment had not inherited the fix,
+    // although `search()` already computes the right value in audit_threshold.
+    //
+    // Directional note: a lower threshold makes the bound exclude FEWER docs,
+    // so this bug understated the proof (and bound_violations stayed 0). It was
+    // never a false attestation — but the signed field did not mean what its
+    // name says.
     if ((int)out.indices.size() < K || K <= 0) {
         out.global_threshold = 0.0f;
         out.total_excluded_count = 0;
         return out;
     }
-    float worst = exact_score(out.indices[K - 1], query);
+    float worst = (float)base.audit_threshold;
     out.global_threshold = worst;
+    // Why the count is what it is (2026-10-30) — see the struct comment.
+    out.pruned_by_bound = base.pruned_by_bound;
+    out.pruned_by_prefilter = base.pruned_by_prefilter;
+    out.n_corpus = (long long)N;
+    out.exact_scored = (long long)base.k3;
+    out.recall_guarantee_basis = base.recall_guarantee_basis;
 
     // FUSION (2026-09-06): derive the commitment from the audit hook the
     // search() above ALREADY captured — `base.audit_ubs` holds the Cauchy-

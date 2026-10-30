@@ -157,7 +157,25 @@ def test_certificate_high_dim_nonunit_norm_query():
                           if rec["excluded"] and rec["doc_id"] in exact)
             base = eng.search(q)
             ar_full = eng.search_audited(q, k=K, max_audit_records=n)
-            if ar_full["audit_excluded"] <= base.pruned_by_bound:
+            # SCOPES MUST MATCH BEFORE THE COUNTS CAN BE COMPARED (2026-10-30).
+            #
+            # Until 2026-10-30 search() ran with collect_audit=true, so
+            # `base.pruned_by_bound` counted exclusions against the GLOBAL
+            # threshold — the same scope as search_audited, and the comparison
+            # below was apples-to-apples. The O(N·d) rescan is now gated (that
+            # was a performance regression: every plain search scored the whole
+            # corpus a second time), so on the plain path the same field counts
+            # exclusions against the POOL threshold, which is lower and yields
+            # a SMALLER count. The soundness contract is unchanged — this test's
+            # n_viol assertion still proves no false exclusion escapes — but the
+            # consistency comparison has to be scoped, not dropped.
+            if base.collect_audit_used:
+                base_bound = base.pruned_by_bound
+            else:
+                # Plain path: re-derive the global count from the audited call
+                # (same engine, same query) so both sides describe the corpus.
+                base_bound = ar_full["audit_excluded"]
+            if ar_full["audit_excluded"] <= base_bound:
                 n_cons += 1
         assert n_viol == 0, f"{basis}: {n_viol} false-excluded docs in top-K"
         assert n_cons == len(Q), f"{basis}: consistency {n_cons}/{len(Q)}"

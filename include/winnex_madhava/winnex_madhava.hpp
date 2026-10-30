@@ -197,9 +197,21 @@ struct SearchResult {
     //                      L2-lower-bound > audit_threshold (L2).
     //   audit_l2_lbs     — per-id the L2² lower bound (only for L2 metric).
     //   These fields make the audit a WITNESS, not a judge: the certificate
-    //   is byte-for-byte the motor's own pruning decision. Filled on every
-    //   search (the hook is unconditional since 1.9.1).
+    //   is byte-for-byte the motor's own pruning decision.
+    //
+    //   GATED since 2026-10-30 (was unconditional, which was a regression):
+    //   the per-document materialization AND the global-threshold scan
+    //   (O(N·d) + N·4 bytes of scratch) run only when the caller asks for a
+    //   certificate (search_audited / search_with_commitment /
+    //   collect_audit=true). The plain search() returns the top-K and reports
+    //   `collect_audit_used = false`; in that mode audit_threshold is the
+    //   K-th score WITHIN THE POOL and must not be read as the corpus
+    //   threshold. Release 1.9.15 dropped this gate while its comment still
+    //   promised it, making every plain search pay a full exact rescan.
     double audit_threshold = 0.0;
+    // True when the caller requested the audit (so the fields below and the
+    // global threshold are meaningful). False on the plain search() path.
+    bool collect_audit_used = false;
     std::vector<int64_t> audit_ids;
     std::vector<float> audit_ubs;
     std::vector<float> audit_l2_lbs;
@@ -221,11 +233,19 @@ struct SearchResult {
     //                    were discarded WITHOUT a per-vector proof, so the
     //                    global top-K is NOT guaranteed.
     //
-    // This is derived from observed state (k3 vs N), NOT a promise: when the
-    // bound is loose the motor cannot prove whether a doc outside the pool
-    // belongs in the global top-K, so "pool_only" is the honest answer.
+    // This is derived from observed state, NOT a promise: when the bound is
+    // loose the motor cannot prove whether a doc outside the pool belongs in
+    // the global top-K, so "pool_only" is the honest answer.
     // bound_violations == 0 does NOT imply "exact_global".
     std::string recall_guarantee = "pool_only";  // "pool_only" | "exact_global"
+    // WHICH route established the label above (2026-10-30):
+    //   "scored_all"         — the exact post-filter scored all N (k3 == N);
+    //   "proven_exclusions"  — the bound proved pruned_by_bound >= N-K docs
+    //                          outside the top-K, so the returned K ARE the
+    //                          global top-K by proof;
+    //   "none"               — neither; the label is "pool_only".
+    // Exposed so a reader never has to infer the reason from k3.
+    std::string recall_guarantee_basis = "none";
 };
 
 // ---------------------------------------------------------------------------
@@ -289,19 +309,47 @@ struct AuditSample {
 
 struct AuditCommitment {
     long long total_excluded_count = 0; // docs the bound PROVED outside top-K
-    float global_threshold = 0.0f;      // exact score of the K-th result
+    float global_threshold = 0.0f;      // exact score of the K-th result OF THE CORPUS
     std::vector<AuditSample> sampled_records; // up to max_sample (reservoir)
     // Search metadata (mirrors SearchResult, for the WORM record).
     std::vector<int> indices;           // top-K dataset ids
     long long bound_pairs = 0;
     long long bound_violations = 0;     // always 0
     double latency_ms = 0.0;
-    // RECALL SCOPE (2026-09-03): "exact_global" when the commitment's top-K and
-    // global_threshold cover the ENTIRE corpus (the underlying search() ran the
-    // exact post-filter over all N), else "pool_only". A compliance layer MUST
-    // NOT sign a "pool_only" commitment as if it proved the global top-K — the
-    // certificate only proves exclusion from the top-K of the pool.
+    // PRUNING BREAKDOWN (2026-10-30) — WHY total_excluded_count is what it is.
+    //
+    // Without these two the auditor sees `total_excluded_count = 0` and cannot
+    // tell the two very different causes apart:
+    //   - the bound found nothing to prove (loose bound), or
+    //   - the bound never got the chance, because a fixed k1_fraction cutoff
+    //     discarded the corpus first.
+    // Measured on a 20k x 384d corpus with stage1=64 (the historical default):
+    // pruned_by_bound = 0, pruned_by_prefilter = 19,800 — every document was
+    // dropped by the cutoff, none by proof. Those two zeros mean opposite
+    // things and only the pair says which.
+    long long pruned_by_bound = 0;      // discarded WITH a per-doc proof
+    long long pruned_by_prefilter = 0;  // discarded WITHOUT one (fixed cutoff)
+    // The denominator that makes the two above readable: without N and the
+    // number of docs actually exact-scored, "19,800 discarded" is a number
+    // without a fraction. An auditor reading `total_excluded_count = 0` needs
+    // n_corpus=20,000 / scored=200 / proved=0 / cutoff=19,800 to see the shape.
+    long long n_corpus = 0;             // documents in the index
+    long long exact_scored = 0;         // docs the exact post-filter scored (k3)
+    // RECALL SCOPE (2026-09-03, widened 2026-10-30): "exact_global" when the
+    // returned top-K is provably the global top-K. Two independent routes reach
+    // that:
+    //   1. the exact post-filter scored all N (k3 == N) — the historical test;
+    //   2. the bound proved every doc outside the top-K (pruned_by_bound >= N-K)
+    //      — which implies the top-K we returned IS the global one, by proof.
+    // Route 2 was already computed and thrown away: a config with s1 == d
+    // returned recall 1.0000 and pruned_by_bound = N-K while being labelled
+    // "pool_only". A compliance layer MUST NOT sign a "pool_only" commitment as
+    // if it proved the global top-K — but it equally must not understate a
+    // proof it holds. `recall_guarantee_basis` says which route was taken.
     std::string recall_guarantee = "pool_only";  // "pool_only" | "exact_global"
+    // "scored_all" | "proven_exclusions" | "none" — the OBSERVED basis of the
+    // label above, so a reader never has to infer the reason from k3.
+    std::string recall_guarantee_basis = "none";
 };
 
 // ---------------------------------------------------------------------------
