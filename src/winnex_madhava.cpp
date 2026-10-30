@@ -1771,10 +1771,23 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
     // Route 2 requires pf_eff for the same reason route 1 does: without the exact
     // post-filter the returned K are ranked by the bound, not by the exact score,
     // so "the K we returned" would not be the K the proof is about.
+    //
+    // GUARD (2026-10-30, second pass). Route 2 is only as sound as the THRESHOLD
+    // the exclusions were counted against. When the audit is gated OFF, the bound
+    // scan counts against the POOL threshold, which is LOWER than the corpus's —
+    // so the count proves exclusion from the pool's top-K, NOT from the corpus's.
+    // Promoting on that count would be exactly the "pool_only signed as global"
+    // error this file has fixed twice. The guard is `collect_audit` (an observed
+    // fact about which threshold was used), not `k3 < N` (a proxy).
+    //
+    // Measured how the two diverge (filler corpus 6k x 256d, s1=192): pool
+    // threshold 0.1573 vs global 0.1606, and the plain-path count came out 644
+    // where the global threshold gives 741 — 13% of the proof silently missing.
     if (pf_eff && out.k3 == N) {
         out.recall_guarantee = "exact_global";
         out.recall_guarantee_basis = "scored_all";
-    } else if (pf_eff && out.pruned_by_bound >= (long long)N - (long long)std::min<int>(K, N)) {
+    } else if (pf_eff && collect_audit &&
+               out.pruned_by_bound >= (long long)N - (long long)std::min<int>(K, N)) {
         out.recall_guarantee = "exact_global";
         out.recall_guarantee_basis = "proven_exclusions";
     } else {
@@ -2004,9 +2017,17 @@ AuditResult MadhavaL2::search_audited(const float* query, int64_t k,
     int K = (int)std::min<int64_t>(k, cfg_.k);
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    // The search() call with the hook enabled captures the exact pruning
+    // The search() call with the hook ENABLED captures the exact pruning
     // decision (same loop, same threshold, same ub_raw as the motor).
-    SearchResult base = search(query);
+    //
+    // REQUEST THE AUDIT EXPLICITLY (2026-10-30). This used to rely on the hook
+    // being unconditional. It is not anymore — search() is gated so the plain
+    // path does not pay the O(N·d) global-threshold scan — and a search that
+    // does not collect would hand this method a POOL threshold while the method
+    // calls itself the witness of the corpus-wide decision. Passing the flag is
+    // what keeps the witness honest; without it, `audit_excluded` would be
+    // counted against a lower threshold in silence.
+    SearchResult base = search(query, {}, /*collect_audit=*/true);
     out.base = base;
 
     const int64_t n_pruned = (int64_t)base.audit_ids.size();
@@ -2135,9 +2156,11 @@ AuditCommitment MadhavaL2::search_with_commitment(const float* query, int64_t k,
     auto t0 = std::chrono::high_resolution_clock::now();
 
     // --- Reuse the exact same search path as search() to get the real
-    // top-K + global threshold. We run search() (which is additive and
-    // already returns the post-filter exact top-K + audit_threshold). ---
-    SearchResult base = search(query);
+    // top-K + global threshold. We run the AUDITED path explicitly
+    // (collect_audit=true): the commitment publishes `global_threshold` and
+    // `pruned_by_bound`, and since 2026-10-30 the plain search() is gated and
+    // would return POOL-scoped values under those names. ---
+    SearchResult base = search(query, {}, /*collect_audit=*/true);
     out.indices = base.indices;
     out.bound_pairs = base.bound_pairs;
     out.bound_violations = base.bound_violations;

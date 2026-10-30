@@ -195,3 +195,70 @@ def test_commitment_explica_por_que_o_total_e_zero():
         # E o número de docs sem prova tem de ser visível.
         sem_prova = c["n_corpus"] - c["pruned_by_bound"] - c["exact_scored"]
         assert sem_prova == c["pruned_by_prefilter"]
+
+
+# ---------------------------------------------------------------------------
+# 5. O GATE NÃO PODE PROMOVER ESCOPO (regressão que esta própria correção
+#    introduziu, e o teste que a pega)
+# ---------------------------------------------------------------------------
+
+def test_gate_nao_promove_escopo_no_caminho_simples():
+    """O caminho simples conta exclusões contra o threshold do POOL, que é
+    MENOR que o do corpus. Promover o escopo com essa contagem seria assinar
+    'exact_global' com um número sobre o pool — exatamente o erro que este
+    arquivo corrige duas vezes.
+
+    Medido como os dois divergem (corpus aleatório 6k x 256d, s1=192): pool
+    threshold 0.1573 vs global 0.1606, e a contagem do caminho simples deu 644
+    onde o threshold global dá 741 — 13% da prova sumindo em silêncio.
+    """
+    X, D, K = _corpus(n=6000, d=256), 256, 10
+    eng = winnex_madhava.build_engine(
+        X, dim=D, metric="cosine", quant="none", k=K,
+        stage1_dim=192, stage2_dim=0)
+    q = np.ascontiguousarray(X[0])
+
+    r = eng.search(q)
+    assert r.collect_audit_used is False
+    assert r.recall_guarantee_basis != "proven_exclusions", (
+        "o caminho simples alegou 'proven_exclusions' — o threshold usado por "
+        "ele é o do POOL, logo a prova seria sobre o pool, não sobre o corpus")
+
+    c = eng.search_with_commitment(q, k=K, max_sample=20)
+    if c["recall_guarantee_basis"] == "proven_exclusions":
+        assert c["pruned_by_bound"] >= len(X) - K, (
+            "promoção sem prova suficiente")
+
+
+def test_global_threshold_e_o_k_esimo_exato_do_corpus():
+    """Verificação INDEPENDENTE do campo assinado: recalcula o K-ésimo score
+    exato do corpus em numpy e exige que o commitment concorde. Não usa o
+    próprio motor como referência."""
+    X, D, K = _corpus(n=6000, d=256), 256, 10
+    eng = winnex_madhava.build_engine(
+        X, dim=D, metric="cosine", quant="none", k=K,
+        stage1_dim=64, stage2_dim=128)
+    for q0 in X[:5]:
+        q = np.ascontiguousarray(q0)
+        c = eng.search_with_commitment(q, k=K, max_sample=20)
+        sims = X @ q                              # força bruta independente
+        kth_global = float(np.partition(sims, -K)[-K])
+        assert abs(c["global_threshold"] - kth_global) < 1e-5, (
+            f"global_threshold={c['global_threshold']:.6f} != K-ésimo exato do "
+            f"corpus {kth_global:.6f} — o campo assinado não é o global")
+
+
+def test_pruned_by_bound_nunca_excede_n_menos_k():
+    """O único invariante estrutural real. NÃO é uma partição: pruned_by_bound
+    e exact_scored se sobrepõem (medido: scored=60, bound=5990 somando N+50 em
+    s1=s2=D=256), então somá-los é erro. O teto de bound é N-K."""
+    X, D, K = _corpus(n=6000, d=256), 256, 10
+    for s1, s2 in ((64, 128), (192, 0), (D, D)):
+        eng = winnex_madhava.build_engine(
+            X, dim=D, metric="cosine", quant="none", k=K,
+            stage1_dim=s1, stage2_dim=s2)
+        c = eng.search_with_commitment(np.ascontiguousarray(X[0]), k=K,
+                                       max_sample=20)
+        assert c["pruned_by_bound"] <= c["n_corpus"] - K, (
+            f"s1={s1}: bound={c['pruned_by_bound']} > N-K={c['n_corpus']-K}")
+        assert c["bound_violations"] == 0

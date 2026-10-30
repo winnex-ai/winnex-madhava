@@ -26,6 +26,10 @@ falsa; era um campo assinado que não significava o que o nome dizia.
 
 ## 2. `exact_global` era derivado da implementação, não da prova
 
+> ⚠️ **Esta correção precisou de um guard na segunda passada** — ver §5. A rota
+> "proven_exclusions" só é sã se o threshold usado na contagem for o do corpus,
+> e o caminho simples passou a usar o do pool.
+
 ```cpp
 // antes
 out.recall_guarantee = (pf_eff && out.k3 == N) ? "exact_global" : "pool_only";
@@ -48,7 +52,8 @@ o comprador lê `pool_only` e conclui que o motor não sabe se acertou.
 **Correção:** duas rotas, com a base declarada em `recall_guarantee_basis`
 (`scored_all` | `proven_exclusions` | `none`). A rota 2 exige `pf_eff` pelo
 mesmo motivo que a rota 1: sem o post-filter exato, os K devolvidos são
-ordenados pelo bound e não são os K sobre os quais a prova fala.
+ordenados pelo bound e não são os K sobre os quais a prova fala. Exige também
+`collect_audit` — ver §5.
 
 ---
 
@@ -159,3 +164,63 @@ ALL TESTS PASSED       (tests/ C++)
 6 testes novos em `test_audit_scope_2026_10_30.py`, incluindo a contraprova
 (`test_escopo_pool_only_nao_e_promovido_sem_prova`) e a regressão de
 performance (`test_busca_simples_e_mais_rapida_que_o_scan_exato`).
+
+
+---
+
+## 5. O gate quase reintroduziu o bug que ele veio corrigir
+
+Esta correção **introduziu uma regressão na primeira versão**, e ela foi
+encontrada só porque o critério foi reexaminado em vez de aceito.
+
+**O defeito.** Com o gate, o caminho simples conta `pruned_by_bound` contra o
+threshold do **pool**, que é menor que o do corpus. A rota
+`proven_exclusions` (correção 2) decide pela contagem — e eu havia guardado
+apenas com `pf_eff && k3 == N`, sem considerar de qual threshold a contagem
+veio. Numa config onde a contagem do pool cruza `N-K`, o caminho simples
+assinaría `exact_global` **com um número medido sobre o pool** — exatamente o
+"pool_only assinado como global" que este arquivo corrige duas vezes.
+
+**A medição que expõe (corpus aleatório 6k × 256d):**
+
+| config | threshold do pool | threshold do corpus | `pruned_by_bound` (plain) | (auditado) |
+|---|---:|---:|---:|---:|
+| s1=64, s2=128 | 0,1573 | 0,1873 | 0 | 0 |
+| s1=128, s2=0 | 0,1795 | 0,1873 | 0 | 0 |
+| **s1=192, s2=0** | **0,1844** | **0,1873** | **644** | **741** |
+
+Na terceira linha o caminho simples perde 13% da prova em silêncio. Com o
+threshold do pool suficientemente baixo, ele poderia também *cruzar* `N-K` e
+promover indevidamente.
+
+**A correção.** O guard passou a ser `collect_audit` — um fato **observável**
+sobre qual threshold foi usado — em vez de `k3 < N`, que é um proxy
+probabilístico. E `search_audited` / `search_with_commitment` passaram a
+pedir `collect_audit=true` **explicitamente**, para que a testemunha não
+dependa de um default.
+
+### Uma segunda coisa que eu havia afirmado errado
+
+Eu documentei `exact_scored + pruned_by_bound + pruned_by_prefilter` como uma
+"partição" do corpus. **Não é.** Medido em `s1=s2=D=256`, onde o resíduo é 0 e
+o bound é exato:
+
+```
+exact_scored 60 | pruned_by_bound 5990 | pruned_by_prefilter 0
+soma = 6050  (N = 6000)
+```
+
+Um sobrevivente do pool que depois perde está nos **dois** conjuntos. O
+invariante real é `pruned_by_bound <= N - K`, e `pruned_by_prefilter` é um
+resto **clampado**, que pode subdeclarar. Corrigido no header e no teste.
+
+### O que a revisão não mudou
+
+O gate em si continua correto e medido: `search()` 1,03 → 0,22 ms, e a busca
+"rápida" deixou de ser mais lenta que `search_exact`. O que faltava era o
+escopo explícito e o guard.
+
+**Suíte:** 56 passed, 2 skipped (Python) + ALL TESTS PASSED (C++).
+Três testes novos cobrem especificamente o guard (§5), incluindo uma
+verificação **independente** de `global_threshold` — o K-ésimo exato do corpus
+recalculado em numpy, sem usar o motor como referência.

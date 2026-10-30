@@ -327,14 +327,26 @@ struct AuditCommitment {
     // pruned_by_bound = 0, pruned_by_prefilter = 19,800 — every document was
     // dropped by the cutoff, none by proof. Those two zeros mean opposite
     // things and only the pair says which.
-    long long pruned_by_bound = 0;      // discarded WITH a per-doc proof
-    long long pruned_by_prefilter = 0;  // discarded WITHOUT one (fixed cutoff)
+    long long pruned_by_bound = 0;      // score < threshold: PROVEN outside top-K
+    long long pruned_by_prefilter = 0;  // discarded WITHOUT a proof (fixed cutoff)
     // The denominator that makes the two above readable: without N and the
     // number of docs actually exact-scored, "19,800 discarded" is a number
     // without a fraction. An auditor reading `total_excluded_count = 0` needs
     // n_corpus=20,000 / scored=200 / proved=0 / cutoff=19,800 to see the shape.
     long long n_corpus = 0;             // documents in the index
     long long exact_scored = 0;         // docs the exact post-filter scored (k3)
+    //
+    // THESE THREE ARE NOT A PARTITION (measured 2026-10-30). `pruned_by_bound`
+    // counts every doc whose bound fell below the threshold; `exact_scored`
+    // counts every doc the post-filter scored. A pool survivor that then lost
+    // is in BOTH. Measured at s1=s2=D=256 (where the residual is 0 and the
+    // bound is exact): scored=60, bound=5990, prefilter=0 — the two overlap by
+    // 50, and they sum to N+50. So:
+    //   - pruned_by_bound <= N - K   is the invariant worth checking;
+    //   - pruned_by_prefilter is a CLAMPED remainder (max(0, N - scored -
+    //     bound)), so it can under-report when the sets overlap — read it as
+    //     "at least this many were cut without a proof", never as a partition.
+    // Stated here because summing them looks reasonable and is wrong.
     // RECALL SCOPE (2026-09-03, widened 2026-10-30): "exact_global" when the
     // returned top-K is provably the global top-K. Two independent routes reach
     // that:
@@ -417,11 +429,15 @@ public:
 
     // Search: bound pruning (top-k1/k2) + optional post-filter.
     // collect_audit (internal, 2026-09-06): when false, the search still
-    // COUNTS the pruned_by_bound exclusions but does NOT materialize
-    // audit_ids/audit_ubs (the per-doc certificate) — the ~O(N) collection
-    // cost is skipped. Callers that only need the top-K (search_batch, the
-    // public search) pass false; callers that need the per-doc proof
-    // (search_audited, search_with_commitment) use the default true.
+    // GATED on collect_audit (2026-10-30). With collect_audit=false the path
+    // skips BOTH the per-document materialization (audit_ids/audit_ubs) AND the
+    // O(N·d) global-threshold scan, so it returns the top-K fast — but its
+    // `pruned_by_bound` / `audit_threshold` are then scoped to the POST-FILTER
+    // POOL, not the corpus, and `recall_guarantee_basis` can never be
+    // "proven_exclusions" (the proof would be about the wrong threshold).
+    // Callers that need the corpus-wide proof (search_audited,
+    // search_with_commitment) MUST pass true — it is not a default, so that the
+    // choice is visible at the call site rather than inherited by accident.
     SearchResult search(const float* query, const std::vector<float>& query_norm,
                         bool collect_audit) const;
     // Public 2-arg search (collects the audit — backward compatible).
