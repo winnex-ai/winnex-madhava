@@ -224,3 +224,65 @@ escopo explícito e o guard.
 Três testes novos cobrem especificamente o guard (§5), incluindo uma
 verificação **independente** de `global_threshold` — o K-ésimo exato do corpus
 recalculado em numpy, sem usar o motor como referência.
+
+---
+
+## 6. O gargalo de verdade: o caminho auditado devolvia o top-K do POOL
+
+Esta é a correção que os itens 1–5 estavam orbitando sem tocar.
+
+`search()` paga um scan exato `O(N·d)` sobre o corpus inteiro para achar o
+threshold global — e **descartava o top-K que aquela mesma passada tinha
+acabado de produzir**. `out.indices` continuava apontando para a lista do
+post-filter pool.
+
+Medido (20k × 384d, `s1=64/s2=128`, 40 queries):
+
+| | antes | depois |
+|---|---:|---:|
+| recall do caminho AUDITADO vs top-K exato | **0,5083** | **1,0000** |
+| o caminho auditado devolve o top-K exato | 1 de 8 queries | **40/40** |
+| `k3` (docs escaneados pelo post-filter) | 200 | 20 000 |
+| `pruned_by_prefilter` | 19 800 | **0** |
+| escopo declarado | `pool_only` | `exact_global` |
+
+Ou seja: o caminho que existe para **certificar** respondia 0,51 enquanto
+segurava, na mesma passada, a prova de que a resposta era 1,0. E como o
+`total_excluded_count` era contado contra um threshold que a lista devolvida
+não respeitava, o certificado saía **com prova zero em 100% das consultas** —
+que é exatamente o `excluidos_mediana = 0` do relatório do Kaggle.
+
+**A correção não adiciona trabalho.** A passada passa a guardar `(score, id)` e
+a usar o argsort que ela já pagava.
+
+### Por que minha recomendação anterior estava errada
+
+Eu havia proposto trocar o braço do benchmark para `stage1_dim=d` "para que o
+certificado tenha prova". Era **mascarar**:
+
+| caminho certificado | latência (20k, d=384, k=3) |
+|---|---:|
+| `search_exact` (o algoritmo exato puro) | **0,69 ms** |
+| cascade `s1=64`, commit (após a correção) | 1,03 ms |
+| cascade `rank_pleno`, commit | 1,85 ms |
+
+`rank_pleno` é 80% mais lento que o cascade corrigido e converte um corpus de
+20k docs de projeções em força bruta disfarçada. A cobertura de 99,98% dele é
+**tautológica**: o índice já é exato, então o bound não economiza nada. O
+caminho certificado nunca precisou da config cara — precisava devolver o
+resultado que já calculava.
+
+O benchmark foi revertido para a config rápida, com o registro do porquê.
+
+### O que continua valendo da análise anterior
+
+A cobertura de exclusão **ainda depende do bound**, e o penhasco de `s1/d`
+existe: em 384d com embeddings de texto, `s1=64` dá `pruned_by_bound = 0`
+mesmo escaneando o corpus. O motor agora devolve a resposta **exata** nessa
+config; o que ele não consegue é **provar exclusão** com esses resíduos. São
+duas garantias diferentes:
+
+- **top-K exato**: obtido (recall 1,0, `exact_global` por `scored_all`);
+- **prova de exclusão por bound**: zero em `s1=64`, ~100% em `s1≈d`.
+
+Antes da correção, `s1=64` não dava nenhuma das duas.
