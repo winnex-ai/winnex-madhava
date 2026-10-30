@@ -109,17 +109,47 @@ def test_search_exact_always_exact_global():
 
 
 def test_commitment_carries_recall_scope():
-    """The AuditCommitment must not be over-read: when the underlying search()
-    is pool-only, the commitment says 'pool_only' (it proves exclusion from the
-    POOL top-K, not the global top-K). With audit_exhaustive it says
-    'exact_global'."""
+    """O commitment NÃO pode ser lido além do que prova.
+
+    MUDANÇA DE CONTRATO (2026-10-30) — este teste afirmava
+    `c_pool == "pool_only"`, e essa era a assinatura de um defeito, não de uma
+    garantia: o commitment pagava um scan exato O(N·d) só para achar o
+    threshold global, e descartava o top-K exato que a MESMA passada tinha
+    acabado de produzir. Medido (20k x 384d, s1=64/s2=128, 40 queries): o
+    caminho auditado devolvia o top-K exato em 1 de 8 queries, recall 0.5083 —
+    enquanto segurava a prova de que a resposta era 1.0.
+
+    Agora a passada entrega threshold E top-K, então o commitment é
+    `exact_global` por `scored_all`. O teste passou a exigir o que importa:
+
+      1. o commitment devolve o MESMO top-K que search_exact();
+      2. o escopo declarado corresponde ao que foi de fato escaneado;
+      3. `pool_only` continua possível — mas só quando o escaneamento global
+         NÃO aconteceu, que é o caso do caminho simples (gated).
+    """
     Xq, eng_pool = _build(ae=False)
     _, eng_glob = _build(ae=True)
     q = np.ascontiguousarray(Xq[0], dtype=np.float32)
     c_pool = eng_pool.search_with_commitment(q, k=10, max_sample=5)
     c_glob = eng_glob.search_with_commitment(q, k=10, max_sample=5)
-    assert c_pool["recall_guarantee"] == "pool_only"
+
+    # 1. o caminho auditado devolve o top-K exato (era 0.5083 antes)
+    exato = set(int(i) for i in eng_pool.search_exact(q).indices)
+    assert set(int(i) for i in c_pool["indices"]) == exato, (
+        "o commitment devolveu um top-K diferente do exato")
+    assert set(int(i) for i in c_glob["indices"]) == exato
+
+    # 2. o escopo declarado corresponde ao escaneamento
     assert c_glob["recall_guarantee"] == "exact_global"
+    if c_pool.get("exact_scored", 0) >= eng_pool.num_vectors():
+        assert c_pool["recall_guarantee"] == "exact_global"
+    else:
+        assert c_pool["recall_guarantee"] == "pool_only"
+
+    # 3. o caminho SIMPLES, gated, continua honestamente pool_only
+    r = eng_pool.search(q)
+    assert r.collect_audit_used is False
+    assert r.recall_guarantee == "pool_only"
 
 
 def test_default_matches_previous_behavior_on_clean_manifold():

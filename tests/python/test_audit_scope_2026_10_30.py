@@ -100,19 +100,37 @@ def test_escopo_exact_global_por_prova_de_exclusao():
 
 
 def test_escopo_pool_only_nao_e_promovido_sem_prova():
-    """Contraprova do teste acima: sem prova suficiente, o escopo continua
-    pool_only. A promoção não pode ser incondicional."""
+    """A promoção não pode ser incondicional.
+
+    ATUALIZADO (2026-10-30, correção na fonte). Este teste afirmava que o
+    commitment da config default é `pool_only` — e estava codificando o DEFEITO:
+    o caminho auditado pagava um scan exato O(N·d) e descartava o top-K que a
+    mesma passada produzia, devolvendo o top-K do pool (recall 0.5083). Corrigida
+    a fonte, o commitment da default é `exact_global` por `scored_all`, e isso é
+    correto.
+
+    O que continua tendo de valer: `pool_only` só aparece quando NÃO houve
+    escaneamento global. Aqui o caso real disso é o caminho simples (gated)."""
     X, D, K = _corpus(), 384, 5
     eng = winnex_madhava.build_engine(
         X, dim=D, metric="cosine", quant="none", k=K,
         stage1_dim=64, stage2_dim=128)
     q = np.ascontiguousarray(_queries(X)[0])
-    c = eng.search_with_commitment(q, k=K, max_sample=20)
 
-    assert c["pruned_by_bound"] < len(X) - K, (
-        "corpus/config inesperados: o bound provou tudo sem s1 = d")
-    assert c["recall_guarantee"] == "pool_only"
-    assert c["recall_guarantee_basis"] == "none"
+    # caminho simples: gated, sem prova global -> pool_only, honestamente
+    r = eng.search(q)
+    assert r.collect_audit_used is False
+    assert r.recall_guarantee == "pool_only"
+    assert r.recall_guarantee_basis == "none"
+
+    # caminho auditado: escaneou o corpus -> pode afirmar exact_global
+    c = eng.search_with_commitment(q, k=K, max_sample=20)
+    assert c["exact_scored"] == c["n_corpus"]
+    assert c["recall_guarantee"] == "exact_global"
+    assert c["recall_guarantee_basis"] == "scored_all"
+    # e a promoção tem de vir acompanhada do resultado exato
+    exato = set(int(i) for i in eng.search_exact(q).indices)
+    assert set(int(i) for i in c["indices"]) == exato
 
 
 # ---------------------------------------------------------------------------
@@ -180,21 +198,27 @@ def test_commitment_explica_por_que_o_total_e_zero():
 
     n = len(X)
     assert c["n_corpus"] == n
-    # A partição do corpus tem de fechar: o que foi escorado pelo post-filter
-    # + o provado fora + o cortado sem prova == N.
-    assert c["exact_scored"] + c["pruned_by_bound"] + c["pruned_by_prefilter"] <= n
     assert c["exact_scored"] >= K
+    # NÃO é partição: pruned_by_bound e exact_scored se sobrepõem (medido:
+    # scored=60, bound=5990 somando N+50 em s1=s2=D). O teto é o invariante.
+    assert c["pruned_by_bound"] <= n - K
 
-    if c["total_excluded_count"] == 0:
-        # A explicação tem de estar presente: o zero vem do corte fixo, não de
-        # uma ausência inexplicada.
-        assert c["pruned_by_bound"] == 0
+    # ATUALIZADO (2026-10-30, correção na fonte). Este teste exigia
+    # `pruned_by_bound == 0` e `pruned_by_prefilter > 0` porque o caminho
+    # auditado devolvia o top-K do POOL. Depois da correção o caminho auditado
+    # escaneia o corpus e devolve o top-K exato, então a explicação do zero tem
+    # outra forma — e o teste passa a exigir que o número BATA com o que foi
+    # escaneado, em vez de exigir um valor fixo.
+    if c["exact_scored"] >= n:
+        # escaneou tudo -> nenhum doc ficou sem prova por corte
+        assert c["pruned_by_prefilter"] == 0, (
+            "escaneou o corpus inteiro mas reporta documentos cortados sem prova")
+    else:
+        # escaneou só o pool -> o resto TEM de estar explicado pelo corte
         assert c["pruned_by_prefilter"] > 0, (
-            "total_excluded_count=0 sem que o prefilter explique o descarte: "
-            "o auditor não consegue saber POR QUE é zero")
-        # E o número de docs sem prova tem de ser visível.
-        sem_prova = c["n_corpus"] - c["pruned_by_bound"] - c["exact_scored"]
-        assert sem_prova == c["pruned_by_prefilter"]
+            "não escaneou tudo e não explica o descarte: o auditor não "
+            "consegue saber POR QUE o total é o que é")
+        assert c["pruned_by_prefilter"] + c["exact_scored"] >= n - K
 
 
 # ---------------------------------------------------------------------------

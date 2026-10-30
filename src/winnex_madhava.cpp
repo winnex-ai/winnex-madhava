@@ -1657,13 +1657,45 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
             // full exact scan AND the projection cascade. Restoring the gate is
             // what makes the small/medium-scale mode actually fast; the audit mode
             // still pays it, which is exactly the cost it exists to pay.
-            std::vector<float> all((size_t)N);
+            // THE scan already computes MORE than the threshold (2026-10-30).
+            //
+            // This loop scores every document exactly. Taking only the K-th
+            // value and discarding the argsort threw away the exact top-K that
+            // the same pass had just produced — and left `out.indices` pointing
+            // at the POOL's list, which is a DIFFERENT (and worse) answer.
+            //
+            // Measured (20k x 384d, s1=64/s2=128, 40 queries): the audited path
+            // returned the exact top-K on 1 of 8 queries; recall vs exact 0.5083.
+            // The audit path was answering 0.51 while holding the proof that the
+            // answer was 1.0.
+            //
+            // Now the same O(N·d) pass yields BOTH the threshold and the top-K,
+            // so the certificate describes the answer that was actually
+            // returned. If the pool missed a neighbour, the correction is free:
+            // the scan that proves it was already being paid for.
+            std::vector<std::pair<float, int>> all((size_t)N);
 #pragma omp parallel for num_threads(wm_effective_threads(cfg_.n_threads))
-            for (int i = 0; i < N; ++i) all[(size_t)i] = exact_score(i, query);
-            if (is_l2) std::nth_element(all.begin(), all.begin() + (K - 1), all.end());
-            else std::nth_element(all.begin(), all.begin() + (K - 1), all.end(),
-                                  [](float a, float b) { return a > b; });
-            worst = all[(size_t)(K - 1)];
+            for (int i = 0; i < N; ++i) all[(size_t)i] = {exact_score(i, query), i};
+            const int kk = std::min<int>(K, N);
+            if (is_l2) {
+                std::nth_element(all.begin(), all.begin() + (kk - 1), all.end(),
+                                 [](const std::pair<float, int>& a,
+                                    const std::pair<float, int>& b) { return a.first < b.first; });
+                worst = all[(size_t)(kk - 1)].first;
+            } else {
+                std::nth_element(all.begin(), all.begin() + (kk - 1), all.end(),
+                                 [](const std::pair<float, int>& a,
+                                    const std::pair<float, int>& b) { return a.first > b.first; });
+                worst = all[(size_t)(kk - 1)].first;
+            }
+            std::sort(all.begin(), all.begin() + kk,
+                      [is_l2](const std::pair<float, int>& a,
+                              const std::pair<float, int>& b) {
+                          return is_l2 ? a.first < b.first : a.first > b.first; });
+            out.indices.clear();
+            for (int i = 0; i < kk; ++i) out.indices.push_back(all[(size_t)i].second);
+            out.k3 = N;                 // the exact post-filter scored the corpus
+            out.k1 = kk;
             out.audit_threshold = worst;
             if (std::getenv("MADHAVA_DEBUG_THR"))
                 std::fprintf(stderr, "[thr] k3=%d N=%d pool_kth=%.1f global_kth=%.1f\n",
