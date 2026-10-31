@@ -5,6 +5,110 @@ All notable changes to `winnex-madhava` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.23] — 2026-10-30
+
+### Fixed: o caminho auditado devolvia o top-K do POOL, não o exato
+
+`search()` pagava um scan exato `O(N·d)` sobre o corpus inteiro para achar o
+threshold global — e descartava o top-K que aquela mesma passada tinha acabado
+de produzir. `out.indices` continuava apontando para a lista do post-filter
+pool.
+
+Medido (20k × 384d, `s1=64/s2=128`, 40 queries):
+
+| | antes | depois |
+|---|---:|---:|
+| recall do caminho auditado vs top-K exato | 0,5083 | **1,0000** |
+| devolve o top-K exato | 1 de 8 queries | 40/40 |
+| `k3` (docs escorados pelo post-filter) | 200 | 20.000 |
+| `pruned_by_prefilter` | 19.800 | **0** |
+| escopo | `pool_only` | `exact_global` |
+
+O caminho que existe para **certificar** respondia 0,51 enquanto segurava, na
+mesma passada, a prova de que a resposta era 1,0. Como o
+`total_excluded_count` era contado contra um threshold que a lista devolvida
+não respeitava, o certificado saía com **prova zero em 100% das consultas**.
+
+A correção não adiciona trabalho: a passada guarda `(score, id)` e usa o
+argsort que já pagava. Custo inalterado.
+
+### Fixed: `global_threshold` do commitment era o threshold do POOL
+
+`search_with_commitment` usava `exact_score(out.indices[K-1])` — o K-ésimo da
+lista **retornada**. Com `k3 < N` essa lista é o pool, e o K-ésimo do pool é
+menor que o do corpus. O campo assinado como `global_threshold` carregava um
+número do pool. Agora usa `base.audit_threshold`. Direção do erro: threshold
+menor → exclui menos → **subestimava** a prova (`bound_violations` seguia 0;
+nunca foi atestação falsa).
+
+### Changed: escopo `exact_global` derivado da prova, não da implementação
+
+O critério era `k3 == N` — o que o post-filter por acaso escorou. Existe uma
+segunda rota, já calculada e descartada: se o bound **provou**
+`pruned_by_bound >= N-K`, os K devolvidos são o global por prova. Medido
+(20k × 384d, `s1=s2=384`): recall vs FAISS 1,0000 e `(N - pruned_by_bound) - K
+∈ {0,…,1}` em 40/40 queries — e o rótulo era `pool_only`.
+
+Novo campo `recall_guarantee_basis` (`scored_all` | `proven_exclusions` |
+`none`) diz **qual rota** estabeleceu o rótulo.
+
+### Changed: `search()` não paga o scan exato quando não é certificado
+
+`search()` agora é gated em `collect_audit` (antes rodava o scan `O(N·d)` em
+toda chamada — medido 1,03 ms → **0,22 ms**, 4,6×). O caminho auditado continua
+pagando, que é o preço que ele existe para pagar.
+
+**Consequência de escopo, declarada e não escondida:** com o gate, os mesmos
+nomes de campo descrevem escopos diferentes nos dois caminhos.
+`search_audited` expõe `audit_threshold_basis` e `pruned_by_bound_basis`
+(`"global"` | `"pool"`), derivados de `k3` vs `N`, em vez de deixar isso
+implícito. Comparar `search_audited().audit_excluded` com
+`search().pruned_by_bound` é inválido quando os escopos diferem.
+
+### Added: o commitment explica o próprio zero
+
+`total_excluded_count = 0` tem duas causas opostas — bound frouxo, ou corte
+fixo que descartou o corpus antes. Só o par distingue. Medido (20k × 384d,
+`stage1=64`): `pruned_by_bound = 0`, `pruned_by_prefilter = 19.800`.
+
+Campos novos no `AuditCommitment`: `pruned_by_bound`, `pruned_by_prefilter`,
+`n_corpus`, `exact_scored`, `recall_guarantee_basis`.
+
+> **Nota sobre uma não-partição.** `exact_scored + pruned_by_bound +
+> pruned_by_prefilter` **não** é uma partição: os dois primeiros se sobrepõem
+> (medido em `s1=s2=D=256`: scored=60, bound=5990, soma N+50). O invariante
+> real é `pruned_by_bound <= N - K`, e `pruned_by_prefilter` é resto clampado
+> que pode subdeclarar.
+
+### Nota de compatibilidade
+
+Nenhuma API pública mudou de assinatura. `search()` passou a devolver
+`collect_audit_used` e `recall_guarantee_basis`. O comportamento do top-K
+muda para melhor no caminho auditado (era o top-K do pool); quem dependia do
+bug deve reavaliar.
+
+## [1.9.22] … [1.9.16] — 2026-09-06 a 2026-10-29
+
+Estas versões foram publicadas **sem entrada neste arquivo** (o CHANGELOG parou
+em 1.9.15 e o projeto foi de 1.9.15 a 1.9.22). As mensagens de commit e as tags
+são a fonte de verdade para o período; os marcos conhecidos, reconstruídos do
+`git log`:
+
+- **1.9.22** — `attach_float32` (anexa o corpus sem reprojetar) e
+  `quantize_float32_to_u8` vetorizado.
+- **1.9.21** — clamp de `stage1_dim` em `dim`; o clamp de `stage2_dim` foi
+  **removido** porque degradava o cascade (com `dim=64` e defaults, deixava
+  `s2 == s1` e matava a segunda etapa).
+- **1.9.20** — correções de `set_basis` e calibração de escala int8 na base PCA.
+- **1.9.17–1.9.19** — correções de build multiplataforma e de derivagem de
+  versão (setuptools-scm a partir da tag; o `fetch-depth` raso do CI fazia o
+  build derivar a versão anterior e o PyPI recusar com "File already exists").
+- **1.9.16** — correções de build multiplataforma (MSVC).
+
+> **Compromisso a partir de 1.9.23:** todo bump de tag vem acompanhado de
+> entrada neste arquivo, no mesmo commit. A lacuna acima custou a auditoria de
+> oito versões.
+
 ## [1.9.15] — 2026-09-06
 
 ### Changed: code cleanup and optimization
