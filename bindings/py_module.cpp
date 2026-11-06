@@ -153,7 +153,8 @@ PYBIND11_MODULE(_winnex_madhava, m) {
              },
              py::arg("P1"), py::arg("P2") = py::none())
         .def("search",
-             [](const MadhavaL2& self, py::array_t<float, py::array::c_style | py::array::forcecast> q) {
+             [](const MadhavaL2& self, py::array_t<float, py::array::c_style | py::array::forcecast> q,
+                int64_t k) {
                  auto info = q.request();
                  if (info.ndim != 1 || (int)info.shape[0] != self.dim())
                      throw std::runtime_error("query must be float32 of length dim");
@@ -161,10 +162,11 @@ PYBIND11_MODULE(_winnex_madhava, m) {
                  // audit certificate collection (audit_ids/audit_ubs) — that
                  // ~O(N) cost is paid only by search_audited/commitment, which
                  // request it explicitly (2026-09-06).
+                 // k=0 keeps the historical behaviour (cfg_.k).
                  return self.search((const float*)info.ptr, std::vector<float>(),
-                                    /*collect_audit=*/false);
+                                    /*collect_audit=*/false, (int)k);
              },
-             py::arg("query"))
+             py::arg("query"), py::arg("k") = 0)
         .def("search_exact",
              [](const MadhavaL2& self, py::array_t<float, py::array::c_style | py::array::forcecast> q) {
                  auto info = q.request();
@@ -273,6 +275,12 @@ PYBIND11_MODULE(_winnex_madhava, m) {
                  // PROVED >= N-K exclusions (2026-10-30). `_basis` says which.
                  d["recall_guarantee"] = c.recall_guarantee;
                  d["recall_guarantee_basis"] = c.recall_guarantee_basis;
+                 // Degradation marker (2026-11-06): "" means the exclusion
+                 // count was measured; "pool_exhausted" means K was larger
+                 // than the pool and the count is 0 by construction.
+                 d["degraded_reason"] = c.degraded_reason;
+                 d["requested_k"] = c.requested_k;
+                 d["returned"] = c.returned;
                  py::list samples;
                  for (const auto& s : c.sampled_records) {
                      py::dict sd;

@@ -526,7 +526,14 @@ void MadhavaL2::set_basis(const float* P1, const float* P2) {
         std::vector<float> pj1((size_t)s1);
         for (int j = 0; j < s1; j++) {
             float d = dot_f32(base_v, P1_ + (size_t)j * D, D);
-            pr1_f_[(size_t)i * s1 + j] = d;
+            // BUGFIX (2026-11-06): pr1_f_ is allocated ONLY when
+            // quant != Int8 (build() line ~890). With quant=Int8 it is
+            // nullptr, and the unconditional store below segfaults on the
+            // first document — this made basis="pca_corpus" (UB Width) and
+            // any set_basis() call crash the process under the default
+            // quant mode. e1_/pn1 still need the float projections, so the
+            // store is guarded rather than removed.
+            if (pr1_f_ != nullptr) pr1_f_[(size_t)i * s1 + j] = d;
             pj1[j] = d;
             pn1 += d * d;
         }
@@ -540,7 +547,8 @@ void MadhavaL2::set_basis(const float* P1, const float* P2) {
             std::vector<float> pj2((size_t)s2);
             for (int j = 0; j < s2; j++) {
                 float d = dot_f32(base_v, P2_ + (size_t)j * D, D);
-                pr2_f_[(size_t)i * s2 + j] = d;
+                // BUGFIX (2026-11-06): same nullptr hazard as pr1_f_ above.
+                if (pr2_f_ != nullptr) pr2_f_[(size_t)i * s2 + j] = d;
                 pj2[j] = d;
                 pn2 += d * d;
             }
@@ -1167,11 +1175,18 @@ float MadhavaL2::exact_score(int idx, const float* q) const {
 }
 
 SearchResult MadhavaL2::search(const float* query, const std::vector<float>& query_norm,
-                               bool collect_audit) const {
+                               bool collect_audit, int k_override) const {
     SearchResult out;
     if (!built_) return out;
     out.collect_audit_used = collect_audit;
     int N = n_, D = cfg_.dim, s1 = cfg_.stage1_dim, s2 = cfg_.stage2_dim, K = cfg_.k;
+    // k PER CALL (2026-11-06). Before this, K was always cfg_.k (the build-time
+    // k) and search_with_commitment's `k` argument could only SHRINK it
+    // (`K = min(k, K)`), never grow it — so asking for k=20 on an engine built
+    // with k=10 returned 10, while the signed commitment recorded
+    // k_requested=20. A WORM record attested a k that was never executed.
+    // Now the caller's k is honoured in both directions.
+    if (k_override > 0) K = std::min<int>(k_override, N);
     bool is_l2 = (cfg_.metric == Metric::L2);
     bool normalize = (cfg_.metric == Metric::Cosine) && cfg_.normalize_input;
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -2182,7 +2197,10 @@ AuditCommitment MadhavaL2::search_with_commitment(const float* query, int64_t k,
     AuditCommitment out;
     if (!built_) return out;
     int N = n_, D = cfg_.dim, s1 = cfg_.stage1_dim, s2 = cfg_.stage2_dim, K = cfg_.k;
-    if (k > 0) K = (int)std::min<int64_t>(k, K);
+    // K per call — honoured in BOTH directions (2026-11-06). The old
+    // `K = min(k, K)` silently capped at the build-time k, so k=20 on an
+    // engine built with k=10 returned 10 while the signed record said 20.
+    if (k > 0) K = (int)std::min<int64_t>(k, N);
     bool is_l2 = (cfg_.metric == Metric::L2);
     bool normalize = (cfg_.metric == Metric::Cosine) && cfg_.normalize_input;
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -2192,7 +2210,8 @@ AuditCommitment MadhavaL2::search_with_commitment(const float* query, int64_t k,
     // (collect_audit=true): the commitment publishes `global_threshold` and
     // `pruned_by_bound`, and since 2026-10-30 the plain search() is gated and
     // would return POOL-scoped values under those names. ---
-    SearchResult base = search(query, {}, /*collect_audit=*/true);
+    // Pass K so the search actually executes the k this record will attest.
+    SearchResult base = search(query, {}, /*collect_audit=*/true, K);
     out.indices = base.indices;
     out.bound_pairs = base.bound_pairs;
     out.bound_violations = base.bound_violations;
@@ -2218,8 +2237,19 @@ AuditCommitment MadhavaL2::search_with_commitment(const float* query, int64_t k,
     // never a false attestation — but the signed field did not mean what its
     // name says.
     if ((int)out.indices.size() < K || K <= 0) {
+        // The pool could not yield K results, so no global K-th score exists
+        // and the exclusion is left at ZERO. Silently, until 2026-11-06: the
+        // record carried total_excluded_count=0 with no indication that the
+        // proof had been DEGRADED rather than computed. That is the same shape
+        // as "a bound too loose to prove anything" but has a different cause:
+        // the fixed k1_fraction/k2_max cutoffs removed the corpus first. A
+        // reader of the WORM could not tell the two apart.
+        // Record why, so the record is not over-read.
         out.global_threshold = 0.0f;
         out.total_excluded_count = 0;
+        out.degraded_reason = "pool_exhausted";
+        out.requested_k = (long long)K;
+        out.returned = (long long)out.indices.size();
         return out;
     }
     float worst = (float)base.audit_threshold;

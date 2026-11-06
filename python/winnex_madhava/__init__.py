@@ -380,7 +380,11 @@ def retrieve(
         contents : list[str], se corpus_text dado
     """
     kk = k or engine.config().k
-    res = engine.search(np.ascontiguousarray(query, dtype=np.float32))
+    # Pass kk down to the engine (2026-11-06). Before this, retrieve() called
+    # engine.search() with no k, so the C++ side always used cfg_.k and then
+    # this function sliced [:kk] — asking for k=20 on an engine built with
+    # k=10 returned 10 silently.
+    res = engine.search(np.ascontiguousarray(query, dtype=np.float32), kk)
     out = {
         "indices": res.indices[:kk],
         "scores": [float(0.0)] * len(res.indices[:kk]),  # scores exatos não expostos; mantém posição

@@ -359,6 +359,18 @@ struct AuditCommitment {
     // if it proved the global top-K — but it equally must not understate a
     // proof it holds. `recall_guarantee_basis` says which route was taken.
     std::string recall_guarantee = "pool_only";  // "pool_only" | "exact_global"
+    // WHY A COMMITMENT WAS DEGRADED (2026-11-06). Empty = the count means what
+    // it says. Non-empty = the proof was NOT computed and the record must not
+    // be read as "the bound excluded nothing":
+    //   "pool_exhausted" — search returned fewer than K results, so no global
+    //                      K-th score exists; total_excluded_count is 0 by
+    //                      construction, not by measurement.
+    // Before this field, a k larger than the pool produced a signed record
+    // with total_excluded_count = 0 and no marker distinguishing it from a
+    // genuine zero (a bound too loose to prove anything).
+    std::string degraded_reason = "";
+    long long requested_k = 0;   // K the caller asked for (when degraded)
+    long long returned = 0;      // results actually produced (when degraded)
     // "scored_all" | "proven_exclusions" | "none" — the OBSERVED basis of the
     // label above, so a reader never has to infer the reason from k3.
     std::string recall_guarantee_basis = "none";
@@ -438,8 +450,12 @@ public:
     // Callers that need the corpus-wide proof (search_audited,
     // search_with_commitment) MUST pass true — it is not a default, so that the
     // choice is visible at the call site rather than inherited by accident.
+    // k_override: per-call K (2026-11-06). 0 = use cfg_.k (historical).
+    // Prior to this, K was always the build-time k and the `k` argument of
+    // search_with_commitment could only shrink it — so a signed WORM record
+    // could carry k_requested=N while the search executed k=cfg_.k.
     SearchResult search(const float* query, const std::vector<float>& query_norm,
-                        bool collect_audit) const;
+                        bool collect_audit, int k_override = 0) const;
     // Public 2-arg search (collects the audit — backward compatible).
     SearchResult search(const float* query, const std::vector<float>& query_norm) const;
     SearchResult search(const float* query) const; // computes norm internally
