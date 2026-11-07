@@ -387,7 +387,15 @@ def retrieve(
     res = engine.search(np.ascontiguousarray(query, dtype=np.float32), kk)
     out = {
         "indices": res.indices[:kk],
-        "scores": [float(0.0)] * len(res.indices[:kk]),  # scores exatos não expostos; mantém posição
+        # SCORES EXATOS (2026-11-06). Até aqui esta linha era
+        # `[0.0] * len(...)` — o consumidor recebia cinco zeros tanto para uma
+        # query com match (top-1 = 1.0000) quanto para uma sem match
+        # (top-1 = 0.2288). Sem score não há threshold; sem threshold não há
+        # abstenção — e abstenção é o que separa um RAG que responde de um RAG
+        # que um advogado pode usar. O post-filter JÁ calculava esses scores e
+        # os descartava. `scores` vem alinhado 1:1 com `indices`; se o caminho
+        # não pontuou exatamente, fica vazio em vez de mentir com zero.
+        "scores": [float(s) for s in getattr(res, "scores", [])][:kk],
         "bound_violations": int(res.bound_violations),
         "k1": int(res.k1),
         "k2": int(res.k2),

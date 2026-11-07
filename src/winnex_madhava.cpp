@@ -1494,7 +1494,8 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
             // walk order — this IS the correct result.
             std::sort(heap.begin(), heap.end(),
                       [&](auto& a, auto& b) { return !worse_than(a.first, b.first); });
-            for (int i = 0; i < K; i++) out.indices.push_back(heap[i].second);
+            for (int i = 0; i < K; i++) { out.indices.push_back(heap[i].second);
+                out.scores.push_back(heap[i].first); }
         } else {
             // Fallback (early_exit off or partial): sort the exact scores.
             if (is_l2)
@@ -1502,7 +1503,8 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
             else
                 std::partial_sort(exact.begin(), exact.begin() + std::min(K, n_exact), exact.end(),
                                   [](auto& a, auto& b) { return a.first > b.first; });
-            for (int i = 0; i < std::min(K, n_exact); i++) out.indices.push_back(exact[i].second);
+            for (int i = 0; i < std::min(K, n_exact); i++) {
+                out.indices.push_back(exact[i].second); out.scores.push_back(exact[i].first); }
         }
     // ── BOUND-VIOLATION MEASUREMENT (2026-10-21) ────────────────────────────
     //
@@ -1606,7 +1608,8 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
 
     } else {
         std::partial_sort(ranked.begin(), ranked.begin() + std::min(K, k2), ranked.end());
-        for (int i = 0; i < std::min(K, k2); i++) out.indices.push_back(ranked[i].second);
+        for (int i = 0; i < std::min(K, k2); i++) {
+            out.indices.push_back(ranked[i].second); out.scores.push_back(ranked[i].first); }
     }
 
     // RECALL GUARANTEE — derived from OBSERVED state, not a promise.
@@ -1708,7 +1711,13 @@ SearchResult MadhavaL2::search(const float* query, const std::vector<float>& que
                               const std::pair<float, int>& b) {
                           return is_l2 ? a.first < b.first : a.first > b.first; });
             out.indices.clear();
-            for (int i = 0; i < kk; ++i) out.indices.push_back(all[(size_t)i].second);
+            out.scores.clear();
+            for (int i = 0; i < kk; ++i) {
+                out.indices.push_back(all[(size_t)i].second);
+                // The score was already computed for this document above; not
+                // exposing it forced consumers to guess (2026-11-06).
+                out.scores.push_back(all[(size_t)i].first);
+            }
             out.k3 = N;                 // the exact post-filter scored the corpus
             out.k1 = kk;
             out.audit_threshold = worst;
@@ -2033,7 +2042,8 @@ SearchResult MadhavaL2::search_exact(const float* query, const std::vector<float
     else
         std::partial_sort(scores.begin(), scores.begin() + std::min(K, N), scores.end(),
                           [](auto& a, auto& b) { return a.first > b.first; });
-    for (int i = 0; i < std::min(K, N); i++) out.indices.push_back(scores[i].second);
+    for (int i = 0; i < std::min(K, N); i++) {
+        out.indices.push_back(scores[i].second); out.scores.push_back(scores[i].first); }
     out.latency_ms = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - t0).count();
     return out;
 }

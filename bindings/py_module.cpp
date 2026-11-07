@@ -68,6 +68,10 @@ PYBIND11_MODULE(_winnex_madhava, m) {
 
     py::class_<SearchResult>(m, "SearchResult")
         .def_readonly("indices", &SearchResult::indices)
+        // Exact scores of the returned top-K, aligned 1:1 with `indices`
+        // (2026-11-06). Without these a consumer cannot threshold -> cannot
+        // abstain. The post-filter already computed them and discarded them.
+        .def_readonly("scores", &SearchResult::scores)
         .def_readonly("k1", &SearchResult::k1)
         .def_readonly("k2", &SearchResult::k2)
         .def_readonly("k3", &SearchResult::k3)
@@ -172,6 +176,9 @@ PYBIND11_MODULE(_winnex_madhava, m) {
                  auto info = q.request();
                  if (info.ndim != 1 || (int)info.shape[0] != self.dim())
                      throw std::runtime_error("query must be float32 of length dim");
+                 // Returns SearchResult (unchanged contract). `scores` is now a
+                 // registered field of it, so callers get the exact scores
+                 // without a breaking change to the return type (2026-11-06).
                  return self.search_exact((const float*)info.ptr);
              },
              py::arg("query"))

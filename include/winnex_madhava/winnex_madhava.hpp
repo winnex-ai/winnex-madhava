@@ -162,6 +162,13 @@ struct Config {
 // ---------------------------------------------------------------------------
 struct SearchResult {
     std::vector<int> indices;   // top-K indices, by chosen metric
+    // EXACT SCORES OF THE RETURNED TOP-K (2026-11-06). The exact post-filter
+    // already computes all[i] = {exact_score, index} for every document — the
+    // scores were then discarded. Without them a consumer cannot threshold, and
+    // therefore cannot abstain: a query with top-1 1.0000 and a query with
+    // top-1 0.2288 both reached the caller with scores == 0.0. Aligned 1:1 with
+    // `indices`. Empty when the search path did not score exactly.
+    std::vector<float> scores;
     int k1 = 0;                 // survivors after Stage-1 pruning
     int k2 = 0;                 // survivors after Stage-2 pruning (if any)
     int k3 = 0;                 // candidates actually scored exactly
