@@ -77,6 +77,11 @@ namespace {
 struct OCLApi;
 static OCLApi* g_ocl = nullptr;  // nullptr until dlopen succeeds
 static void* g_ocl_handle = nullptr;  // dlopen handle of the loaded loader
+// Why the last load_opencl() failed ("" on success). Returned to the caller so
+// SpeedEngine::gpu_reason_ can distinguish "the .so could not be opened" from
+// "the .so opened but does not export the OpenCL API" — the two need very
+// different fixes, and conflating them sent users to the wrong library.
+static std::string g_opencl_err;
 static std::string g_ocl_lib;    // the loader name actually loaded (for the
                                  // per-engine resolution: a DIFFERENT loader
                                  // requested by a later engine must not be
@@ -116,6 +121,7 @@ struct OCLApi {
 bool load_opencl(const char* explicit_lib = nullptr) {
     // Resolve the loader name for THIS request (per-engine):
     //   explicit param > $WINNEX_OPENCL_LIB > default loader.
+    g_opencl_err.clear();  // stale reasons must not leak into a later success
     std::string want;
     if (explicit_lib && *explicit_lib) want = explicit_lib;
     else if (const char* env = std::getenv("WINNEX_OPENCL_LIB")) { if (*env) want = env; }
@@ -135,6 +141,7 @@ bool load_opencl(const char* explicit_lib = nullptr) {
 
     void* h = ocl_open(want.c_str());
     if (!h) {
+        g_opencl_err = "'" + want + "' could not be opened: " + ocl_error();
         std::fprintf(stderr,
                      "[Winnex Madhava] OpenCL loader '%s' failed to load: %s\n",
                      want.c_str(), ocl_error());
@@ -144,9 +151,10 @@ bool load_opencl(const char* explicit_lib = nullptr) {
                  "[Winnex Madhava] OpenCL loader resolved: %s\n", want.c_str());
     auto api = new OCLApi;
     bool ok = true;
+    const char* first_missing = nullptr;  // which entry point was absent
 #define LOAD(name) \
     *(void**)(&api->name) = ocl_sym(h, #name); \
-    if (!api->name) ok = false
+    if (!api->name) { ok = false; if (!first_missing) first_missing = #name; }
     LOAD(clGetPlatformIDs);
     LOAD(clGetDeviceIDs);
     LOAD(clCreateContext);
@@ -167,6 +175,18 @@ bool load_opencl(const char* explicit_lib = nullptr) {
     LOAD(clReleaseContext);
 #undef LOAD
     if (!ok) {
+        // The .so opened but does not export the OpenCL API. This is the
+        // signature of a VENDOR ICD (libnvidia-opencl.so.1, libmali.so.1, ...):
+        // those are PLUG-INS loaded BY the ICD loader, they do not implement
+        // the public entry points themselves. Point at the real fix instead of
+        // reporting a load failure, which sent users to the wrong library.
+        g_opencl_err =
+            "'" + want + "' opened but does not export the OpenCL API "
+            "(missing " + (first_missing ? first_missing : "entry points") +
+            " — it looks like a vendor ICD, not a loader). Pass the ICD "
+            "loader instead, e.g. 'libOpenCL.so.1', or leave the loader "
+            "empty to use the platform default.";
+        std::fprintf(stderr, "[Winnex Madhava] %s\n", g_opencl_err.c_str());
         ocl_close(h);
         delete api;
         return false;
@@ -689,15 +709,22 @@ void SpeedEngine::enable_gpu(const std::vector<float>& corpus, int n, int dim) {
     // hardcoded vendor cascade — the caller decides the driver.
     const char* loader = opencl_lib_.empty() ? nullptr : opencl_lib_.c_str();
     if (!load_opencl(loader)) {
-        const char* shown = loader;
-        if (!shown) shown = std::getenv("WINNEX_OPENCL_LIB");
-        if (!shown || !*shown) shown = "libOpenCL.so.1";
-        gpu_reason_ = std::string("OpenCL loader not found: ") + shown;
+        // Report WHY it failed. The old code always said "loader not found",
+        // which was wrong (and misleading) when the .so opened fine but was a
+        // vendor ICD without the public API — see g_opencl_err.
+        if (!g_opencl_err.empty()) {
+            gpu_reason_ = "OpenCL loader unusable: " + g_opencl_err;
+        } else {
+            const char* shown = loader;
+            if (!shown) shown = std::getenv("WINNEX_OPENCL_LIB");
+            if (!shown || !*shown) shown = "libOpenCL.so.1";
+            gpu_reason_ = std::string("OpenCL loader not found: ") + shown;
+        }
         if (require_gpu_) {
             throw std::runtime_error(
-                "SpeedEngine: GPU required but the OpenCL loader is missing. "
-                "Reason: " + gpu_reason_ + ". Set SpeedEngine(opencl_lib=...) "
-                "or WINNEX_OPENCL_LIB to an installed loader/driver .so.");
+                "SpeedEngine: GPU required but the OpenCL loader is unusable. "
+                "Reason: " + gpu_reason_ + " Set SpeedEngine(opencl_lib=...) "
+                "or WINNEX_OPENCL_LIB to an installed loader (libOpenCL.so.1).");
         }
         std::fprintf(stderr,
                      "[Winnex Madhava] SpeedEngine: GPU unavailable — falling "

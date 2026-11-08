@@ -162,8 +162,11 @@ def build_engine(
     # (sublinear); 0 = brute-force exact scan.
     speed_n_anchors: int = 0,
     speed_nprobe: int = 4,
-    # Explicit OpenCL loader/driver .so for the speed mode GPU backend
-    # (e.g. "libOpenCL.so.1", "libnvidia-opencl.so.1", or a full path).
+    # Explicit OpenCL ICD LOADER .so for the speed mode GPU backend
+    # (e.g. "libOpenCL.so.1" or a full path to it). A vendor ICD
+    # ("libnvidia-opencl.so.1", "libmali.so.1") is NOT a loader: it is a
+    # plug-in the loader dlopens itself and does not export the cl* entry
+    # points, so passing one fails and reports it via gpu_reason().
     # Empty (default) = standard loader resolution (env WINNEX_OPENCL_LIB,
     # else the platform ICD loader). No hardcoded vendor fallback.
     speed_opencl_lib: str = "",
@@ -658,4 +661,30 @@ class MadhavaSpeed:
 
     @property
     def backend(self):
+        """Implementation family: "native" (C++ SpeedEngine) or "torch".
+
+        This does NOT say whether the GPU is in use — a native engine can be
+        running on the CPU after a silent fallback. Use ``backend_hw`` for
+        that. Kept as-is for backward compatibility.
+        """
         return "native" if self._native is not None else "torch"
+
+    @property
+    def backend_hw(self):
+        """Hardware actually executing the scan: "gpu", "cpu" or "torch".
+
+        Unlike ``backend``, this distinguishes a real GPU scan from a silent
+        CPU fallback, which matters for benchmarks and for verifying a driver
+        migration. Read straight from the C++ engine (``has_gpu()``), so it is
+        the engine's own view, not an inference from Python state.
+        """
+        if self._native is None:
+            return "torch"
+        return "gpu" if self._native.has_gpu() else "cpu"
+
+    @property
+    def gpu_reason(self):
+        """Why the GPU is not enabled ("" when it is). Diagnostic string."""
+        if self._native is None:
+            return "native engine unavailable in this build; using torch"
+        return self._native.gpu_reason()
