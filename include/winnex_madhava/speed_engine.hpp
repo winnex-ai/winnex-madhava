@@ -49,11 +49,14 @@ public:
     //   the nprobe most-similar anchor cells, and QKᵀ runs only over the
     //   members of those cells. When n_anchors < 2, it falls back to the full
     //   exact scan (brute force).
-    // opencl_lib: explicit OpenCL loader/driver .so to use (e.g.
-    //   "libOpenCL.so.1", "libnvidia-opencl.so.1", "libmali.so.1", or a full
-    //   path). Empty string (default) = use the standard loader resolution
-    //   (env WINNEX_OPENCL_LIB, else the platform ICD loader). No hardcoded
-    //   vendor fallback is attempted; the caller picks the loader.
+    // opencl_lib: explicit OpenCL ICD LOADER .so to use (e.g. "libOpenCL.so.1"
+    //   or a full path to it). Empty string (default) = use the standard loader
+    //   resolution (env WINNEX_OPENCL_LIB, else the platform ICD loader). No
+    //   hardcoded vendor fallback is attempted; the caller picks the loader.
+    //   NOTE: a vendor ICD (libnvidia-opencl.so.1, libmali.so.1, ...) is NOT a
+    //   loader — it is a plug-in the loader dlopens itself, and it does not
+    //   export the public cl* entry points. Passing one fails symbol
+    //   resolution and reports a descriptive gpu_reason().
     SpeedEngine(const float* corpus, int n, int dim, Metric metric,
                 int n_anchors = 0, int nprobe = 4, bool require_gpu = false,
                 const std::string& opencl_lib = "");

@@ -204,3 +204,57 @@ def test_enable_gpu_stage1_search_parity(tmp_path):
         assert list(rc.audit_ids) == list(rg.audit_ids), f"q{idx}: audit diverged"
         assert rc.recall_guarantee == rg.recall_guarantee, f"q{idx}: scope diverged"
         assert rc.bound_violations == rg.bound_violations == 0, f"q{idx}: viol"
+
+
+# --- Honest backend reporting (2026-11-08) -----------------------------------
+# Regression: `backend` only ever returned "native"/"torch", so a SILENT CPU
+# fallback (e.g. an unusable OpenCL loader) still reported "native" and looked
+# healthy. `backend_hw` reads has_gpu() from the C++ engine and must tell the
+# two apart.
+
+def test_backend_hw_reports_gpu_when_required():
+    X = _clustered_corpus(n=10_000)
+    eng = winnex_madhava.build_engine(
+        X, dim=X.shape[1], k=10, speed=True, require_gpu=True,
+    )
+    assert eng.backend == "native"
+    assert eng.backend_hw == "gpu"
+    assert eng.gpu_reason == ""
+
+
+def test_backend_hw_reports_cpu_on_silent_fallback():
+    """An unusable loader falls back to CPU without raising (require_gpu=False).
+
+    Before this fix the engine reported backend="native" and looked GPU-backed;
+    backend_hw must say "cpu" and gpu_reason must explain why.
+    """
+    X = _clustered_corpus(n=10_000)
+    eng = winnex_madhava.build_engine(
+        X, dim=X.shape[1], k=10, speed=True, require_gpu=False,
+        speed_opencl_lib="/nonexistent/libOpenCL.so.1",
+    )
+    assert eng.backend_hw == "cpu"
+    assert eng.gpu_reason          # non-empty: the reason is surfaced
+
+
+def test_vendor_icd_is_reported_as_icd_not_missing_loader(tmp_path):
+    """Passing a vendor ICD must explain it is an ICD, not 'loader not found'.
+
+    libnvidia-opencl.so.1 dlopens fine but exports none of the cl* entry
+    points; the old message wrongly claimed the loader was missing, sending
+    users to look for a file that was already there.
+    """
+    ics = sorted(
+        p for p in __import__("pathlib").Path("/usr/lib/x86_64-linux-gnu")
+        .glob("lib*-opencl.so.1") if "nvidia" in p.name
+    )
+    if not ics:
+        pytest.skip("no vendor OpenCL ICD present on this machine")
+    X = _clustered_corpus(n=2_000)
+    eng = winnex_madhava.build_engine(
+        X, dim=X.shape[1], k=10, speed=True, require_gpu=False,
+        speed_opencl_lib=str(ics[0]),
+    )
+    assert eng.backend_hw == "cpu"
+    reason = eng.gpu_reason.lower()
+    assert "icd" in reason or "does not export" in reason, reason
